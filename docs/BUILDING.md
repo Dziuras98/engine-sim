@@ -1,12 +1,21 @@
 # Budowanie engine-sim
 
-## Zakres
+## Obsługiwany baseline
 
-Repozytorium jest obecnie przeznaczone do budowania na Windows. Oficjalną ścieżką dla projektu nEXTcAR jest build x64 w konfiguracji `Release`, wykonywany skryptem `tools/build-release.ps1`.
+Oficjalnym buildem projektu nEXTcAR jest obecnie:
 
-Skrypt nie modyfikuje kodu symulacji. Konfiguruje istniejący projekt CMake, inicjalizuje zależności i umieszcza wynik w przewidywalnym katalogu.
+```text
+System:        Windows x64
+Generator:     Visual Studio 17 2022
+Konfiguracja:  Release
+Target:        engine-sim-app
+Katalog build: build/release
+Artefakty:     artifacts/Release
+```
 
-## Jedno polecenie
+Repozytorium używa CMake. Skrypt NC-001 nie zmienia kodu symulacji ani algorytmów `engine-sim`; przygotowuje toolchain, konfiguruje istniejący projekt i buduje aplikację z dotychczasowymi opcjami funkcjonalnymi.
+
+## Build jednym poleceniem
 
 Z katalogu głównego repozytorium:
 
@@ -14,170 +23,249 @@ Z katalogu głównego repozytorium:
 pwsh -NoProfile -File .\tools\build-release.ps1
 ```
 
-W Windows PowerShell 5.1:
+Alternatywnie w Windows PowerShell 5.1:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build-release.ps1
 ```
 
-Domyślnie skrypt usuwa poprzednie katalogi `build/release` i `artifacts/Release`, konfiguruje projekt od nowa i buduje target `engine-sim-app`.
+Domyślnie skrypt usuwa `build/release` i `artifacts/Release`, inicjalizuje submoduły, przygotowuje przypięte zależności, konfiguruje CMake i buduje target `engine-sim-app` w konfiguracji `Release`.
 
-## Wymagane narzędzia
+## Wymagania systemowe
 
-1. Windows 10/11 x64 albo Windows Server z kompatybilnym Windows SDK.
-2. Visual Studio 2022 lub Visual Studio Build Tools 2022 z workloadem **Desktop development with C++**.
+Wymagane są:
+
+1. Windows 10/11 x64 albo Windows Server 2022 lub nowszy.
+2. Visual Studio 2022 albo Visual Studio Build Tools 2022 z workloadem **Desktop development with C++** i Windows SDK.
 3. CMake 3.21 lub nowszy.
 4. Git z obsługą submodułów.
 5. PowerShell 5.1 albo PowerShell 7.
-6. Dostęp do internetu podczas pierwszej konfiguracji:
-   - pobranie submodułów Git,
-   - pobranie GoogleTest przez CMake `FetchContent`,
-   - pobranie przypiętego WinFlexBison.
+6. Dostęp do internetu podczas pierwszego builda.
 
-Skrypt sprawdza obecność Git i CMake, minimalną wersję CMake oraz dostępność generatora Visual Studio. Nie wymaga uruchomienia z Developer Command Prompt.
+Nie jest wymagany Developer Command Prompt. Skrypt sprawdza obecność Git i CMake, minimalną wersję CMake oraz dostępność generatora Visual Studio przed rozpoczęciem konfiguracji.
+
+Nie dodano `tools/build-release.sh`, ponieważ aktualna aplikacja i `delta-studio` korzystają z Windows API, DirectX i DirectSound; build Linux/macOS nie jest obsługiwanym baseline'em NC-001.
+
+## System budowania
+
+Główny `CMakeLists.txt`:
+
+- wymaga C++17,
+- dodaje zależności z `dependencies/`,
+- buduje bibliotekę `engine-sim`,
+- buduje aplikację `engine-sim-app`,
+- używa wielokonfiguracyjnego generatora Visual Studio,
+- zachowuje opcje:
+  - `PIRANHA_ENABLED=ON`,
+  - `DISCORD_ENABLED=ON`,
+  - `DTV=OFF`.
+
+Skrypt buduje wyłącznie target aplikacji, ale CMake podczas konfiguracji analizuje również deklaracje testów i zależności w submodułach.
 
 ## Pełna lista zależności
 
-### Narzędzia systemowe
+### Narzędzia hosta
 
-| Zależność | Wersja / źródło | Zastosowanie |
-|---|---|---|
-| Visual Studio / Build Tools | 2022, generator `Visual Studio 17 2022` | kompilator MSVC, linker i Windows SDK |
+| Zależność | Wersja / wymaganie | Rola |
+| --- | --- | --- |
+| Visual Studio / Build Tools | 2022, generator `Visual Studio 17 2022` | MSVC, linker i Windows SDK |
 | CMake | co najmniej 3.21 | konfiguracja i sterowanie buildem |
-| Git | wersja obsługująca submoduły | checkout przypiętych zależności |
-| PowerShell | 5.1 lub 7 | uruchomienie procesu builda |
-| WinFlexBison | 2.5.25 | generowanie parsera i leksera w submodule `piranha` |
+| Git | wersja obsługująca submoduły | checkout zależności i kontrola przypiętych rewizji |
+| PowerShell | 5.1 albo 7 | uruchomienie procesu builda |
+| WinFlexBison | paczka 2.5.25 | generowanie parsera i leksera dla `piranha` |
+| vcpkg | tag `2026.05.25`, commit `d015e31e90838a4c9dfa3eed45979bc70d9357fc` | przypięte SDL2 i zależności runtime |
+| Boost | 1.78.0 | kompatybilny `Boost.Filesystem` wymagany przez przypięte `piranha` |
 
-WinFlexBison jest pobierany automatycznie z przypiętego URL i weryfikowany przez SHA-256:
-
-```text
-8d324b62be33604b2c45ad1dd34ab93d722534448f55a16ca7292de32b6ac135
-```
-
-Pliki trafiają do ignorowanego przez Git katalogu `.tools/winflexbison/2.5.25`. Skrypt przekazuje do CMake jawne wartości `FLEX_EXECUTABLE` i `BISON_EXECUTABLE`, dzięki czemu build nie zależy od prywatnych katalogów ani lokalnego `PATH` dla Flex/Bison.
-
-### Submoduły przypięte przez Git
-
-| Ścieżka | Repozytorium | Rola |
-|---|---|---|
-| `dependencies/submodules/delta-studio` | `ange-yaghi/delta-studio` | okno, rendering DirectX 11, audio DirectSound, input i zasoby UI |
-| `dependencies/submodules/simple-2d-constraint-solver` | `ange-yaghi/simple-2d-constraint-solver` | solver więzów używany przez symulację |
-| `dependencies/submodules/csv-io` | `ange-yaghi/csv-io` | obsługa danych CSV |
-| `dependencies/submodules/piranha` | `ange-yaghi/piranha` | kompilator skryptów `.mr` |
-| `dependencies/submodules/direct-to-video` | `ange-yaghi/direct-to-video` | opcjonalny eksport wideo; domyślnie wyłączony przez `DTV=OFF` |
+### Submoduły Git
 
 Skrypt wykonuje:
 
 ```text
 git submodule sync --recursive
 git submodule update --init --recursive
+git submodule status --recursive
 ```
 
-Następnie sprawdza, czy każdy submoduł jest dokładnie na commicie przypiętym w checkoutcie. Stan niezgodny, niezainicjalizowany lub konfliktowy kończy build błędem.
+Build kończy się błędem, jeżeli submoduł jest niezainicjalizowany, konfliktowy albo znajduje się na innej rewizji niż przypięta w checkoutcie.
 
-### Zależności pobierane przez CMake
+Rewizje użyte w zweryfikowanym buildzie NC-001:
 
-Projekt główny i część submodułów deklarują GoogleTest przez `FetchContent` z przypiętego commita:
+| Ścieżka | Commit | Rola |
+| --- | --- | --- |
+| `dependencies/submodules/csv-io` | `2112c55e1e831c8f7a1b91de23722b7926ad3d00` | odczyt danych CSV |
+| `dependencies/submodules/delta-studio` | `b7d0a046733b924d12706baf1e5e59ba427aa7b1` | okno, renderowanie, audio, input i zasoby UI |
+| `dependencies/submodules/direct-to-video` | `19f939c88d740d9e42755d6191daff5719be198f` | opcjonalny eksport wideo; wyłączony przez `DTV=OFF` |
+| `dependencies/submodules/piranha` | `432f0b122bb1663b686c553c7e7269300afac3bc` | kompilator skryptów `.mr` |
+| `dependencies/submodules/simple-2d-constraint-solver` | `e009f4ff1c9c4c5874e865e893cdb62e208fb2b3` | solver więzów symulacji |
+
+### WinFlexBison
+
+Skrypt pobiera:
+
+```text
+https://github.com/lexxmark/winflexbison/releases/download/v2.5.25/win_flex_bison-2.5.25.zip
+SHA-256: 8d324b62be33604b2c45ad1dd34ab93d722534448f55a16ca7292de32b6ac135
+```
+
+Archiwum jest weryfikowane przed rozpakowaniem. Narzędzia trafiają do `.tools/winflexbison/2.5.25`, a ich pełne ścieżki są przekazywane do CMake jako `FLEX_EXECUTABLE` i `BISON_EXECUTABLE`. Build nie zależy od prywatnych katalogów ani lokalnej konfiguracji `PATH` dla Flex/Bison.
+
+Zweryfikowana paczka raportowała:
+
+```text
+win_flex.exe 2.6.4
+GNU Bison 3.8.2
+```
+
+### SDL2 i zależności runtime
+
+Skrypt klonuje przypięty vcpkg i instaluje dla tripletu `x64-windows`:
+
+```text
+sdl2:x64-windows
+sdl2-image:x64-windows
+```
+
+W zweryfikowanym clean buildzie zainstalowano:
+
+| Pakiet | Wersja |
+| --- | --- |
+| `sdl2` | 2.32.10 |
+| `sdl2-image` | 2.8.12 |
+| `libpng` | 1.6.58 |
+| `zlib` | 1.3.2 |
+| `vcpkg-cmake` | 2024-04-23 |
+| `vcpkg-cmake-config` | 2024-05-23 |
+
+CMake otrzymuje jawne ścieżki do nagłówków i bibliotek SDL. Pliki DLL wymagane w runtime są kopiowane do `artifacts/Release/bin`.
+
+### Boost.Filesystem
+
+Przypięty submoduł `piranha` używa historycznego API `boost::filesystem::path::is_complete()`, którego nie ma w aktualnym Boost 1.91. Zamiast modyfikować kod upstream, skrypt buduje kompatybilny Boost 1.78.0 z oficjalnego archiwum:
+
+```text
+https://archives.boost.io/release/1.78.0/source/boost_1_78_0.zip
+SHA-256: f22143b5528e081123c3c5ed437e92f648fe69748e95fa6e2bd41484e2986cc3
+```
+
+Budowane są statyczne biblioteki `filesystem` i `system` dla x64, konfiguracji Release, z dynamicznym runtime MSVC. Nagłówki i biblioteki są przekazywane do `FindBoost` przez jawne ścieżki, z `Boost_NO_SYSTEM_PATHS=ON`.
+
+### Zależności CMake i repozytorium
+
+Projekt deklaruje GoogleTest przez CMake `FetchContent` z przypiętego commita:
 
 ```text
 609281088cfefc76f9d0ce82e1ff6c30cc3591e5
 ```
 
-GoogleTest jest potrzebny podczas konfiguracji CMake, mimo że standardowy skrypt buduje wyłącznie target aplikacji i nie uruchamia testów.
+GoogleTest jest pobierany podczas pierwszej konfiguracji, mimo że skrypt NC-001 buduje tylko target aplikacji i nie uruchamia testów jednostkowych.
 
-### Zależności dostarczone w repozytoriach
+`delta-studio` oraz repozytorium dostarczają lub wykorzystują również:
 
-`delta-studio` zawiera wymagane nagłówki lub biblioteki importowe dla:
-
-- D3DX i D3DCompiler,
+- DirectX / D3DCompiler,
 - DirectSound,
 - Vulkan loader/import library,
-- OpenGL headers,
-- stb.
+- OpenGL i `OpenGL32.lib`,
+- `winmm.lib`, `dxguid.lib`, `dxgi.lib`,
+- stb,
+- statyczną bibliotekę Discord Rich Presence z `dependencies/discord`.
 
-Build korzysta także z bibliotek Windows SDK:
+## Lokalizacja cache
 
-- `d3d9.lib`, `d3d10.lib`, `d3d11.lib`,
-- `dxguid.lib`, `dxgi.lib`,
-- `winmm.lib`,
-- `OpenGL32.lib`.
-
-Obsługa Discord Rich Presence jest domyślnie zachowana (`DISCORD_ENABLED=ON`) i korzysta z kodu oraz statycznej biblioteki znajdujących się w `dependencies/discord`.
-
-## Konfiguracja wykonywana przez skrypt
-
-Domyślne parametry CMake:
+Pobrane i zbudowane narzędzia są przechowywane w ignorowanym przez Git katalogu:
 
 ```text
-Generator: Visual Studio 17 2022
-Architecture: x64
-Configuration: Release
-Target: engine-sim-app
-DTV: OFF
-PIRANHA_ENABLED: ON
-DISCORD_ENABLED: ON
+.tools/
+├── boost/1.78.0/
+├── downloads/
+├── vcpkg/2026.05.25/
+└── winflexbison/2.5.25/
 ```
 
-Dla kompatybilności ze współczesnym CMake skrypt ustawia `CMAKE_POLICY_VERSION_MINIMUM=3.5`. Nie zmienia to algorytmów ani opcji funkcjonalnych aplikacji.
+Domyślny clean build usuwa katalog CMake i paczkę Release, ale zachowuje `.tools`. Dzięki temu kolejne buildy nie muszą ponownie pobierać i kompilować wszystkich zależności. Usunięcie `.tools` wymusza pełną rekonstrukcję toolchainu.
 
-## Artefakty
+## Artefakty Release
 
-Po sukcesie powstaje:
+Po sukcesie powstaje przewidywalna paczka:
 
 ```text
 artifacts/Release/
 ├── assets/
 ├── bin/
-│   ├── delta.conf
-│   └── engine-sim-app.exe
+│   ├── engine-sim-app.exe
+│   ├── SDL2.dll
+│   ├── SDL2_image.dll
+│   ├── libpng16.dll
+│   ├── z.dll
+│   └── delta.conf
 ├── engine-resources/
 │   ├── fonts/
 │   └── shaders/
 ├── lib/
+│   ├── engine-sim.lib
+│   ├── piranha.lib
+│   └── ...
 ├── build-info.json
 └── run-engine-sim.ps1
 ```
 
-`build-info.json` zapisuje:
-
-- commit źródłowy,
-- czas konfiguracji,
-- czas kompilacji,
-- całkowity czas wykonania,
-- system operacyjny i procesor,
-- wersje PowerShell, CMake, Git, Visual Studio, Flex i Bison,
-- generator i architekturę,
-- dokładny stan submodułów.
-
-Uruchomienie z poprawnym katalogiem roboczym:
+Uruchomienie aplikacji z wymaganym katalogiem roboczym:
 
 ```powershell
 pwsh -NoProfile -File .\artifacts\Release\run-engine-sim.ps1
 ```
 
-Launcher przechodzi do katalogu `bin`, ponieważ istniejąca aplikacja odczytuje `../assets/main.mr` względem bieżącego katalogu roboczego.
+Launcher przechodzi do `artifacts/Release/bin`, ponieważ istniejąca aplikacja odczytuje `../assets/main.mr`, a `delta.conf` wskazuje `../engine-resources` i `../assets` względem katalogu procesu.
+
+## Metadane i pomiar czasu
+
+`artifacts/Release/build-info.json` zapisuje:
+
+- commit źródłowy,
+- czas przygotowania zależności,
+- czas konfiguracji CMake,
+- czas kompilacji,
+- czas całkowity,
+- system operacyjny i procesor,
+- wersje PowerShell, CMake, Git, Visual Studio, Flex, Bison, vcpkg i Boost,
+- listę pakietów vcpkg,
+- dokładne rewizje submodułów.
+
+Referencyjny clean build NC-001 wykonano 17 lipca 2026 na świeżym runnerze GitHub Actions `windows-2022`:
+
+| Element | Wynik |
+| --- | --- |
+| System | Microsoft Windows Server 2022 Datacenter 10.0.20348 |
+| Procesor | AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD |
+| PowerShell | 7.6.3 |
+| CMake | 3.31.6 |
+| Git | 2.55.0.windows.2 |
+| Visual Studio | 17.14.35 (June 2026) |
+| Przygotowanie zależności | 222,750 s |
+| Konfiguracja CMake | 18,223 s |
+| Kompilacja Release | 147,976 s |
+| Całość skryptu | 392,211 s |
+
+Pomiar obejmuje pierwszy przebieg bez cache `.tools`, w tym pobranie i zbudowanie zależności. Wynik pochodzi z workflow `NC-001 Release build`, run `29577089173`, dla head commita `6d835d6e24263899249ef6a90501f908922c909b`.
 
 ## Parametry skryptu
 
-Przykłady:
-
 ```powershell
-# Build bez czyszczenia istniejących katalogów
+# Zachowaj istniejący katalog CMake i paczkę artefaktów
 pwsh .\tools\build-release.ps1 -NoClean
 
-# Ograniczenie liczby równoległych zadań
+# Ogranicz równoległość kompilacji
 pwsh .\tools\build-release.ps1 -Parallel 8
 
-# Własne katalogi wyjściowe
+# Użyj innych katalogów wyjściowych
 pwsh .\tools\build-release.ps1 `
     -BuildDirectory build/nc-001 `
     -ArtifactDirectory artifacts/NC-001
 
-# Checkout, w którym submoduły zostały już przygotowane przez CI
+# Pomiń aktualizację submodułów przygotowanych wcześniej przez CI
 pwsh .\tools\build-release.ps1 -SkipSubmoduleUpdate
 ```
 
-Każda ścieżka względna jest interpretowana względem katalogu głównego repozytorium, a nie bieżącego katalogu powłoki.
+Ścieżki względne są rozwiązywane względem katalogu głównego repozytorium, niezależnie od bieżącego katalogu powłoki.
 
 ## Build od czystego checkoutu
 
@@ -188,25 +276,27 @@ git switch agent/nc-001-release-build
 pwsh -NoProfile -File .\tools\build-release.ps1
 ```
 
-Nie jest wymagane użycie `--recurse-submodules`, ponieważ skrypt inicjalizuje submoduły samodzielnie.
+`git clone --recurse-submodules` nie jest wymagane, ponieważ skrypt inicjalizuje submoduły rekurencyjnie.
 
 ## Kontrakt błędów
 
-Skrypt kończy się kodem `0` tylko wtedy, gdy:
+Skrypt zwraca kod `0` wyłącznie wtedy, gdy:
 
-- wymagane narzędzia są dostępne,
-- generator Visual Studio jest dostępny,
-- WinFlexBison przechodzi kontrolę SHA-256,
-- submoduły są kompletne i przypięte,
-- konfiguracja CMake kończy się sukcesem,
-- target `engine-sim-app` kompiluje się w `Release`,
-- `engine-sim-app.exe` istnieje w katalogu artefaktów,
-- wymagane zasoby runtime zostały skopiowane.
+- wymagane narzędzia i generator są dostępne,
+- submoduły odpowiadają przypiętym commitom,
+- archiwa WinFlexBison i Boost przechodzą kontrolę SHA-256,
+- checkout vcpkg odpowiada przypiętemu commitowi,
+- zależności SDL i Boost zostały zbudowane,
+- konfiguracja CMake zakończyła się sukcesem,
+- target `engine-sim-app` został zlinkowany w `Release`,
+- aplikacja, zasoby i biblioteki runtime zostały umieszczone w paczce.
 
-Każde niepowodzenie jest raportowane na stderr/stdout i kończy proces kodem `1`.
+Każdy wyjątek lub niezerowy kod procesu natywnego kończy skrypt kodem `1`. Workflow NC-001 weryfikuje ten kontrakt, uruchamiając skrypt także z celowo nieistniejącym generatorem.
 
-## Ograniczenia
+## Ograniczenia i znane ostrzeżenia
 
-- Build Linux/macOS nie jest częścią NC-001. Kod aplikacji i `delta-studio` używają Windows API, DirectX i DirectSound.
-- Pierwszy build wymaga sieci z powodu `FetchContent` oraz submodułów.
-- NC-001 nie zmienia algorytmów engine-sim ani zachowania symulacji.
+- NC-001 nie zapewnia builda Linux/macOS.
+- Pierwszy clean build wymaga sieci dla submodułów, GoogleTest, WinFlexBison, vcpkg, SDL i Boost.
+- Kompilator raportuje istniejące ostrzeżenia MSVC `C4244` dotyczące konwersji liczbowych w kodzie engine-sim. Nie zostały zmienione, ponieważ korekty algorytmów są poza zakresem NC-001.
+- Workflow potwierdza kompilację i strukturę paczki; nie uruchamia interaktywnego GUI na bezgłowym runnerze.
+- Kod aplikacji i algorytmy symulacji pozostają niezmienione.
