@@ -16,14 +16,20 @@ $ProgressPreference = "SilentlyContinue"
 $env:VCPKG_DISABLE_METRICS = "1"
 
 $MinimumCMakeVersion = [Version]"3.21.0"
+
 $WinFlexBisonVersion = "2.5.25"
 $WinFlexBisonUrl = "https://github.com/lexxmark/winflexbison/releases/download/v2.5.25/win_flex_bison-2.5.25.zip"
 $WinFlexBisonSha256 = "8d324b62be33604b2c45ad1dd34ab93d722534448f55a16ca7292de32b6ac135"
-$VcpkgVersion = "2022.02.23"
-$VcpkgCommit = "b86c0c35b88e2bf3557ff49dc831689c2f085090"
+
+$VcpkgVersion = "2026.05.25"
+$VcpkgCommit = "d015e31e90838a4c9dfa3eed45979bc70d9357fc"
 $VcpkgRepository = "https://github.com/microsoft/vcpkg.git"
-$DynamicTriplet = "x64-windows"
-$StaticTriplet = "x64-windows-static-md"
+$VcpkgTriplet = "x64-windows"
+
+$BoostVersion = "1.78.0"
+$BoostArchiveName = "boost_1_78_0.zip"
+$BoostArchiveUrl = "https://archives.boost.io/release/1.78.0/source/boost_1_78_0.zip"
+$BoostArchiveSha256 = "f22143b5528e081123c3c5ed437e92f648fe69748e95fa6e2bd41484e2986cc3"
 
 function Resolve-RepoPath {
     param([string]$Path, [string]$Root)
@@ -58,6 +64,30 @@ function Capture-Native {
         throw "$Description failed with exit code $LASTEXITCODE."
     }
     return ($output -join [Environment]::NewLine).Trim()
+}
+
+function Get-VerifiedArchive {
+    param(
+        [string]$Url,
+        [string]$Path,
+        [string]$Sha256,
+        [string]$Description
+    )
+
+    if (Test-Path -LiteralPath $Path) {
+        $cachedHash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($cachedHash -ne $Sha256) {
+            Remove-Item -LiteralPath $Path -Force
+        }
+    }
+    if (-not (Test-Path -LiteralPath $Path)) {
+        Write-Host "Downloading $Description..."
+        $null = Invoke-WebRequest -Uri $Url -OutFile $Path
+    }
+    $actualHash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualHash -ne $Sha256) {
+        throw "$Description checksum mismatch. Expected $Sha256, received $actualHash."
+    }
 }
 
 function Copy-Tree {
@@ -131,28 +161,16 @@ try {
     }
 
     $dependencyTimer = [System.Diagnostics.Stopwatch]::StartNew()
+    $downloadRoot = Join-Path $root ".tools/downloads"
+    New-Item -ItemType Directory -Path $downloadRoot -Force | Out-Null
 
+    # Flex/Bison used by the pinned piranha submodule.
     $flexRoot = Join-Path $root ".tools/winflexbison/$WinFlexBisonVersion"
     $flexExe = Join-Path $flexRoot "win_flex.exe"
     $bisonExe = Join-Path $flexRoot "win_bison.exe"
     if (-not ((Test-Path -LiteralPath $flexExe) -and (Test-Path -LiteralPath $bisonExe))) {
-        $downloadRoot = Join-Path $root ".tools/downloads"
         $flexArchive = Join-Path $downloadRoot "win_flex_bison-$WinFlexBisonVersion.zip"
-        New-Item -ItemType Directory -Path $downloadRoot -Force | Out-Null
-        if (Test-Path -LiteralPath $flexArchive) {
-            $cachedHash = (Get-FileHash -LiteralPath $flexArchive -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($cachedHash -ne $WinFlexBisonSha256) {
-                Remove-Item -LiteralPath $flexArchive -Force
-            }
-        }
-        if (-not (Test-Path -LiteralPath $flexArchive)) {
-            Write-Host "Downloading WinFlexBison $WinFlexBisonVersion..."
-            $null = Invoke-WebRequest -Uri $WinFlexBisonUrl -OutFile $flexArchive
-        }
-        $actualHash = (Get-FileHash -LiteralPath $flexArchive -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($actualHash -ne $WinFlexBisonSha256) {
-            throw "WinFlexBison checksum mismatch. Expected $WinFlexBisonSha256, received $actualHash."
-        }
+        Get-VerifiedArchive $WinFlexBisonUrl $flexArchive $WinFlexBisonSha256 "WinFlexBison $WinFlexBisonVersion"
         if (Test-Path -LiteralPath $flexRoot) {
             Remove-Item -LiteralPath $flexRoot -Recurse -Force
         }
@@ -169,6 +187,7 @@ try {
     $flexVersion = Capture-Native $flexExe @("--version") "Flex version check"
     $bisonVersion = Capture-Native $bisonExe @("--version") "Bison version check"
 
+    # SDL2 and SDL2_image from a pinned, current vcpkg snapshot.
     $vcpkgRoot = Join-Path $root ".tools/vcpkg/$VcpkgVersion"
     if (-not (Test-Path -LiteralPath (Join-Path $vcpkgRoot ".git"))) {
         if (Test-Path -LiteralPath $vcpkgRoot) {
@@ -187,39 +206,77 @@ try {
     }
     Run-Native $vcpkgExe @(
         "install",
-        "sdl2:$DynamicTriplet",
-        "sdl2-image:$DynamicTriplet",
-        "boost-filesystem:$StaticTriplet",
+        "sdl2:$VcpkgTriplet",
+        "sdl2-image:$VcpkgTriplet",
         "--disable-metrics",
         "--clean-after-build"
-    ) "vcpkg dependency installation"
+    ) "vcpkg SDL dependency installation"
 
-    $sdlRoot = Join-Path $vcpkgRoot "installed/$DynamicTriplet"
-    $boostRoot = Join-Path $vcpkgRoot "installed/$StaticTriplet"
+    $sdlRoot = Join-Path $vcpkgRoot "installed/$VcpkgTriplet"
     $sdlInclude = Join-Path $sdlRoot "include/SDL2"
     $sdlLibrary = Join-Path $sdlRoot "lib/SDL2.lib"
     $sdlImageLibrary = Join-Path $sdlRoot "lib/SDL2_image.lib"
     $runtimeBin = Join-Path $sdlRoot "bin"
-    $boostInclude = Join-Path $boostRoot "include"
-    $boostLib = Join-Path $boostRoot "lib"
-    $boostDebugLib = Join-Path $boostRoot "debug/lib"
     foreach ($path in @(
         (Join-Path $sdlInclude "SDL.h"),
         (Join-Path $sdlInclude "SDL_image.h"),
         $sdlLibrary,
         $sdlImageLibrary,
-        (Join-Path $boostInclude "boost/version.hpp"),
-        $boostLib,
         $runtimeBin
     )) {
         if (-not (Test-Path -LiteralPath $path)) {
             throw "Required vcpkg output is missing: $path"
         }
     }
-    if ($null -eq (Get-ChildItem -LiteralPath $boostLib -Filter "*boost_filesystem*.lib" -File | Select-Object -First 1)) {
-        throw "Boost.Filesystem library was not found in $boostLib."
-    }
     $vcpkgPackages = Capture-Native $vcpkgExe @("list", "--disable-metrics") "vcpkg package inventory"
+
+    # Boost 1.78 preserves path::is_complete(), required by the pinned piranha source.
+    $boostRoot = Join-Path $root ".tools/boost/$BoostVersion"
+    $boostSource = Join-Path $boostRoot "source/boost_1_78_0"
+    $boostStage = Join-Path $boostRoot "stage"
+    $boostLib = Join-Path $boostStage "lib"
+    $boostArchive = Join-Path $downloadRoot $BoostArchiveName
+    $boostFilesystemLibrary = $null
+    if (Test-Path -LiteralPath $boostLib) {
+        $boostFilesystemLibrary = Get-ChildItem -LiteralPath $boostLib -Filter "*boost_filesystem*.lib" -File | Select-Object -First 1
+    }
+    if (($null -eq $boostFilesystemLibrary) -or -not (Test-Path -LiteralPath (Join-Path $boostSource "boost/version.hpp"))) {
+        Get-VerifiedArchive $BoostArchiveUrl $boostArchive $BoostArchiveSha256 "Boost $BoostVersion"
+        if (Test-Path -LiteralPath $boostRoot) {
+            Remove-Item -LiteralPath $boostRoot -Recurse -Force
+        }
+        $boostExtractRoot = Join-Path $boostRoot "source"
+        New-Item -ItemType Directory -Path $boostExtractRoot -Force | Out-Null
+        Expand-Archive -LiteralPath $boostArchive -DestinationPath $boostExtractRoot -Force
+        $boostBootstrap = Join-Path $boostSource "bootstrap.bat"
+        if (-not (Test-Path -LiteralPath $boostBootstrap)) {
+            throw "Boost bootstrap script was not found after extraction."
+        }
+        Run-Native $boostBootstrap @() "Boost bootstrap"
+        $boostB2 = Join-Path $boostSource "b2.exe"
+        if (-not (Test-Path -LiteralPath $boostB2)) {
+            throw "Boost b2.exe was not produced by bootstrap."
+        }
+        $boostJobs = if ($Parallel -gt 0) { $Parallel } else { [Math]::Max(1, [Environment]::ProcessorCount) }
+        Run-Native $boostB2 @(
+            "--with-filesystem",
+            "--with-system",
+            "toolset=msvc-14.3",
+            "address-model=64",
+            "variant=release",
+            "link=static",
+            "runtime-link=shared",
+            "threading=multi",
+            "--layout=versioned",
+            "--stagedir=$boostStage",
+            "-j$boostJobs",
+            "stage"
+        ) "Boost.Filesystem build"
+    }
+    $boostFilesystemLibrary = Get-ChildItem -LiteralPath $boostLib -Filter "*boost_filesystem*.lib" -File | Select-Object -First 1
+    if ($null -eq $boostFilesystemLibrary) {
+        throw "Boost.Filesystem library was not produced in $boostLib."
+    }
     $dependencyTimer.Stop()
 
     $configureArgs = @(
@@ -237,13 +294,15 @@ try {
         "-DSDL2_LIBRARY_TEMP=$sdlLibrary",
         "-DSDL2_IMAGE_INCLUDE_DIR=$sdlInclude",
         "-DSDL2_IMAGE_LIBRARY=$sdlImageLibrary",
-        "-DBOOST_ROOT=$boostRoot",
+        "-DBOOST_ROOT=$boostSource",
         "-DBOOST_LIBRARYDIR=$boostLib",
-        "-DBoost_INCLUDE_DIR=$boostInclude",
+        "-DBoost_INCLUDE_DIR=$boostSource",
         "-DBoost_LIBRARY_DIR_RELEASE=$boostLib",
-        "-DBoost_LIBRARY_DIR_DEBUG=$boostDebugLib",
         "-DBoost_NO_SYSTEM_PATHS=ON",
         "-DBoost_USE_STATIC_LIBS=ON",
+        "-DBoost_USE_STATIC_RUNTIME=OFF",
+        "-DBoost_USE_RELEASE_LIBS=ON",
+        "-DBoost_USE_DEBUG_LIBS=OFF",
         "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
         "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=$artifactBin",
         "-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE=$artifactLib",
@@ -346,10 +405,13 @@ finally {
             bison = ($bisonVersion -split "`r?`n" | Select-Object -First 1)
             vcpkgTag = $VcpkgVersion
             vcpkgCommit = $actualVcpkgCommit
-            vcpkgDynamicTriplet = $DynamicTriplet
-            vcpkgStaticTriplet = $StaticTriplet
+            vcpkgTriplet = $VcpkgTriplet
+            boost = $BoostVersion
         }
-        dependencies = ($vcpkgPackages -split "`r?`n")
+        dependencies = @(
+            "boost-filesystem:$BoostVersion (official source, static, MSVC runtime DLL)",
+            ($vcpkgPackages -split "`r?`n")
+        )
         submodules = ($submoduleStatus -split "`r?`n")
     }
     $buildInfoPath = Join-Path $artifactRoot "build-info.json"
