@@ -40,29 +40,16 @@ jobs:
         run: |
           $diagnostics = Join-Path $PWD "artifacts/diagnostics"
           New-Item -ItemType Directory -Path $diagnostics -Force | Out-Null
-          $stdout = Join-Path $diagnostics "build-release.stdout.log"
-          $stderr = Join-Path $diagnostics "build-release.stderr.log"
+          $combinedLog = Join-Path $diagnostics "build-release.log"
 
-          $process = Start-Process `
-            -FilePath "pwsh" `
-            -ArgumentList @("-NoProfile", "-File", ".\tools\build-release.ps1") `
-            -RedirectStandardOutput $stdout `
-            -RedirectStandardError $stderr `
-            -NoNewWindow `
-            -Wait `
-            -PassThru
+          & pwsh -NoProfile -File .\tools\build-release.ps1 2>&1 |
+            Tee-Object -FilePath $combinedLog
+          $buildExitCode = $LASTEXITCODE
 
-          Write-Host "--- build stdout tail ---"
-          if (Test-Path -LiteralPath $stdout) {
-            Get-Content -LiteralPath $stdout -Tail 120
-          }
-          Write-Host "--- build stderr tail ---"
-          if (Test-Path -LiteralPath $stderr) {
-            Get-Content -LiteralPath $stderr -Tail 120
-          }
-
-          if ($process.ExitCode -ne 0) {
-            throw "tools/build-release.ps1 failed with exit code $($process.ExitCode)."
+          if ($buildExitCode -ne 0) {
+            Write-Host "--- build log tail ---"
+            Get-Content -LiteralPath $combinedLog -Tail 120
+            throw "tools/build-release.ps1 failed with exit code $buildExitCode."
           }
 
       - name: Verify artifact contract
