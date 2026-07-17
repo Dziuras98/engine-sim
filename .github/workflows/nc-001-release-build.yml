@@ -35,6 +35,17 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
+      - name: Record pinned submodules
+        shell: pwsh
+        run: |
+          $diagnostics = Join-Path $PWD "artifacts/diagnostics"
+          New-Item -ItemType Directory -Path $diagnostics -Force | Out-Null
+          git submodule status --recursive |
+            Tee-Object -FilePath (Join-Path $diagnostics "submodules.txt")
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to record submodule revisions."
+          }
+
       - name: Build engine-sim Release
         shell: pwsh
         run: |
