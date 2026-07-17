@@ -14,6 +14,7 @@ on:
   pull_request:
     branches:
       - master
+      - agent/nc-000-repository-bootstrap
     paths:
       - tools/build-release.ps1
       - CMakeLists.txt
@@ -36,7 +37,33 @@ jobs:
 
       - name: Build engine-sim Release
         shell: pwsh
-        run: pwsh -NoProfile -File .\tools\build-release.ps1
+        run: |
+          $diagnostics = Join-Path $PWD "artifacts/diagnostics"
+          New-Item -ItemType Directory -Path $diagnostics -Force | Out-Null
+          $stdout = Join-Path $diagnostics "build-release.stdout.log"
+          $stderr = Join-Path $diagnostics "build-release.stderr.log"
+
+          $process = Start-Process `
+            -FilePath "pwsh" `
+            -ArgumentList @("-NoProfile", "-File", ".\tools\build-release.ps1") `
+            -RedirectStandardOutput $stdout `
+            -RedirectStandardError $stderr `
+            -NoNewWindow `
+            -Wait `
+            -PassThru
+
+          Write-Host "--- build stdout tail ---"
+          if (Test-Path -LiteralPath $stdout) {
+            Get-Content -LiteralPath $stdout -Tail 120
+          }
+          Write-Host "--- build stderr tail ---"
+          if (Test-Path -LiteralPath $stderr) {
+            Get-Content -LiteralPath $stderr -Tail 120
+          }
+
+          if ($process.ExitCode -ne 0) {
+            throw "tools/build-release.ps1 failed with exit code $($process.ExitCode)."
+          }
 
       - name: Verify artifact contract
         shell: pwsh
@@ -87,6 +114,14 @@ jobs:
 
           Write-Host "Invalid generator returned expected non-zero exit code: $failureCode"
           exit 0
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nc-001-build-diagnostics
+          path: artifacts/diagnostics
+          if-no-files-found: error
 
       - name: Upload Release package
         uses: actions/upload-artifact@v4
