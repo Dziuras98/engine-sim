@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Generator = "Visual Studio 17 2022",
-    [ValidateSet("x64", "Win32")]
+    [ValidateSet("x64")]
     [string]$Architecture = "x64",
     [string]$BuildDirectory = "build/release",
     [string]$ArtifactDirectory = "artifacts/Release",
@@ -23,13 +23,13 @@ $WinFlexBisonSha256 = "8d324b62be33604b2c45ad1dd34ab93d722534448f55a16ca7292de32
 
 $VcpkgVersion = "2026.05.25"
 $VcpkgRepository = "https://github.com/microsoft/vcpkg.git"
+$VcpkgDynamicTriplet = "x64-windows"
+$VcpkgStaticTriplet = "x64-windows-static-md"
 
 function Resolve-RepositoryPath {
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$Path,
-        [Parameter(Mandatory = $true)]
-        [string]$RepositoryRoot
+        [Parameter(Mandatory = $true)] [string]$Path,
+        [Parameter(Mandatory = $true)] [string]$RepositoryRoot
     )
 
     if ([System.IO.Path]::IsPathRooted($Path)) {
@@ -40,10 +40,7 @@ function Resolve-RepositoryPath {
 }
 
 function Get-RequiredCommand {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Name
-    )
+    param([Parameter(Mandatory = $true)] [string]$Name)
 
     $command = Get-Command $Name -ErrorAction SilentlyContinue
     if ($null -eq $command) {
@@ -55,10 +52,8 @@ function Get-RequiredCommand {
 
 function Invoke-NativeCommand {
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$Executable,
-        [Parameter(Mandatory = $true)]
-        [string[]]$Arguments,
+        [Parameter(Mandatory = $true)] [string]$Executable,
+        [Parameter(Mandatory = $true)] [string[]]$Arguments,
         [string]$Description = $Executable
     )
 
@@ -72,10 +67,8 @@ function Invoke-NativeCommand {
 
 function Get-NativeCommandOutput {
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$Executable,
-        [Parameter(Mandatory = $true)]
-        [string[]]$Arguments,
+        [Parameter(Mandatory = $true)] [string]$Executable,
+        [Parameter(Mandatory = $true)] [string[]]$Arguments,
         [string]$Description = $Executable
     )
 
@@ -89,10 +82,7 @@ function Get-NativeCommandOutput {
 }
 
 function Get-WinFlexBison {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$RepositoryRoot
-    )
+    param([Parameter(Mandatory = $true)] [string]$RepositoryRoot)
 
     $toolRoot = Join-Path $RepositoryRoot ".tools/winflexbison/$WinFlexBisonVersion"
     $flexExecutable = Join-Path $toolRoot "win_flex.exe"
@@ -151,22 +141,9 @@ function Get-WinFlexBison {
 
 function Get-VcpkgDependencies {
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$RepositoryRoot,
-        [Parameter(Mandatory = $true)]
-        [string]$GitExecutable,
-        [Parameter(Mandatory = $true)]
-        [string]$Architecture
+        [Parameter(Mandatory = $true)] [string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)] [string]$GitExecutable
     )
-
-    if ($Architecture -eq "x64") {
-        $dynamicTriplet = "x64-windows"
-        $staticTriplet = "x64-windows-static-md"
-    }
-    else {
-        $dynamicTriplet = "x86-windows"
-        $staticTriplet = "x86-windows-static-md"
-    }
 
     $vcpkgRoot = Join-Path $RepositoryRoot ".tools/vcpkg/$VcpkgVersion"
     $vcpkgGitDirectory = Join-Path $vcpkgRoot ".git"
@@ -194,6 +171,11 @@ function Get-VcpkgDependencies {
         throw "Unexpected vcpkg checkout '$checkedOutTag'; expected '$VcpkgVersion'. Delete $vcpkgRoot and retry."
     }
 
+    $vcpkgCommit = Get-NativeCommandOutput -Executable $GitExecutable -Arguments @(
+        "-C", $vcpkgRoot,
+        "rev-parse", "HEAD"
+    ) -Description "vcpkg revision check"
+
     $vcpkgExecutable = Join-Path $vcpkgRoot "vcpkg.exe"
     if (-not (Test-Path -LiteralPath $vcpkgExecutable)) {
         $bootstrapScript = Join-Path $vcpkgRoot "bootstrap-vcpkg.bat"
@@ -206,30 +188,30 @@ function Get-VcpkgDependencies {
 
     Invoke-NativeCommand -Executable $vcpkgExecutable -Arguments @(
         "install",
-        "sdl2:$dynamicTriplet",
-        "sdl2-image:$dynamicTriplet",
-        "boost-filesystem:$staticTriplet",
+        "sdl2:$VcpkgDynamicTriplet",
+        "sdl2-image:$VcpkgDynamicTriplet",
+        "boost-filesystem:$VcpkgStaticTriplet",
         "--disable-metrics",
         "--clean-after-build"
     ) -Description "vcpkg dependency installation"
 
-    $sdlRoot = Join-Path $vcpkgRoot "installed/$dynamicTriplet"
-    $boostRoot = Join-Path $vcpkgRoot "installed/$staticTriplet"
+    $sdlRoot = Join-Path $vcpkgRoot "installed/$VcpkgDynamicTriplet"
+    $boostRoot = Join-Path $vcpkgRoot "installed/$VcpkgStaticTriplet"
     $sdlInclude = Join-Path $sdlRoot "include/SDL2"
     $sdlLibrary = Join-Path $sdlRoot "lib/SDL2.lib"
-    $sdlMainLibrary = Join-Path $sdlRoot "lib/SDL2main.lib"
     $sdlImageLibrary = Join-Path $sdlRoot "lib/SDL2_image.lib"
     $dynamicBin = Join-Path $sdlRoot "bin"
+    $boostInclude = Join-Path $boostRoot "include"
     $boostLibraryDirectory = Join-Path $boostRoot "lib"
+    $boostDebugLibraryDirectory = Join-Path $boostRoot "debug/lib"
 
     foreach ($requiredPath in @(
         (Join-Path $sdlInclude "SDL.h"),
         (Join-Path $sdlInclude "SDL_image.h"),
         $sdlLibrary,
-        $sdlMainLibrary,
         $sdlImageLibrary,
         $dynamicBin,
-        (Join-Path $boostRoot "include"),
+        (Join-Path $boostInclude "boost/version.hpp"),
         $boostLibraryDirectory
     )) {
         if (-not (Test-Path -LiteralPath $requiredPath)) {
@@ -246,54 +228,71 @@ function Get-VcpkgDependencies {
 
     return [pscustomobject]@{
         VcpkgRoot = $vcpkgRoot
-        VcpkgExecutable = $vcpkgExecutable
         Version = $VcpkgVersion
-        DynamicTriplet = $dynamicTriplet
-        StaticTriplet = $staticTriplet
+        Commit = $vcpkgCommit
+        DynamicTriplet = $VcpkgDynamicTriplet
+        StaticTriplet = $VcpkgStaticTriplet
         SdlInclude = $sdlInclude
         SdlLibrary = $sdlLibrary
-        SdlMainLibrary = $sdlMainLibrary
         SdlImageLibrary = $sdlImageLibrary
         DynamicBin = $dynamicBin
         BoostRoot = $boostRoot
+        BoostInclude = $boostInclude
         BoostLibraryDirectory = $boostLibraryDirectory
+        BoostDebugLibraryDirectory = $boostDebugLibraryDirectory
         PackageList = $packageList
     }
 }
 
-function Copy-RuntimeResources {
+function Copy-Tree {
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$RepositoryRoot,
-        [Parameter(Mandatory = $true)]
-        [string]$ArtifactRoot
+        [Parameter(Mandatory = $true)] [string]$Source,
+        [Parameter(Mandatory = $true)] [string]$Destination
     )
 
-    $assetsSource = Join-Path $RepositoryRoot "assets"
-    $fontsSource = Join-Path $RepositoryRoot "dependencies/submodules/delta-studio/engines/basic/fonts"
-    $shadersSource = Join-Path $RepositoryRoot "dependencies/submodules/delta-studio/engines/basic/shaders"
-
-    foreach ($requiredPath in @($assetsSource, $fontsSource, $shadersSource)) {
-        if (-not (Test-Path -LiteralPath $requiredPath)) {
-            throw "Required runtime resource is missing: $requiredPath"
-        }
+    if (-not (Test-Path -LiteralPath $Source)) {
+        throw "Required directory is missing: $Source"
     }
 
-    $assetsDestination = Join-Path $ArtifactRoot "assets"
-    $engineResourcesDestination = Join-Path $ArtifactRoot "engine-resources"
+    if (Test-Path -LiteralPath $Destination) {
+        Remove-Item -LiteralPath $Destination -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+    Copy-Item -Path (Join-Path $Source "*") -Destination $Destination -Recurse -Force
+}
+
+function Stage-ReleasePackage {
+    param(
+        [Parameter(Mandatory = $true)] [string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)] [string]$ArtifactRoot,
+        [Parameter(Mandatory = $true)] [string]$DynamicBin
+    )
+
     $binDestination = Join-Path $ArtifactRoot "bin"
+    $engineResourcesDestination = Join-Path $ArtifactRoot "engine-resources"
 
-    New-Item -ItemType Directory -Path $engineResourcesDestination -Force | Out-Null
-    New-Item -ItemType Directory -Path $binDestination -Force | Out-Null
-
-    Copy-Item -LiteralPath $assetsSource -Destination $assetsDestination -Recurse -Force
-    Copy-Item -LiteralPath $fontsSource -Destination (Join-Path $engineResourcesDestination "fonts") -Recurse -Force
-    Copy-Item -LiteralPath $shadersSource -Destination (Join-Path $engineResourcesDestination "shaders") -Recurse -Force
+    Copy-Tree -Source (Join-Path $RepositoryRoot "assets") -Destination (Join-Path $ArtifactRoot "assets")
+    Copy-Tree -Source (Join-Path $RepositoryRoot "dependencies/submodules/delta-studio/engines/basic/fonts") -Destination (Join-Path $engineResourcesDestination "fonts")
+    Copy-Tree -Source (Join-Path $RepositoryRoot "dependencies/submodules/delta-studio/engines/basic/shaders") -Destination (Join-Path $engineResourcesDestination "shaders")
 
     Set-Content -LiteralPath (Join-Path $binDestination "delta.conf") -Value @(
         "../engine-resources",
         "../assets"
     ) -Encoding Ascii
+
+    $runtimeLibraries = @(Get-ChildItem -LiteralPath $DynamicBin -Filter "*.dll" -File)
+    if ($runtimeLibraries.Count -eq 0) {
+        throw "No runtime DLLs were found in $DynamicBin."
+    }
+    foreach ($library in $runtimeLibraries) {
+        Copy-Item -LiteralPath $library.FullName -Destination (Join-Path $binDestination $library.Name) -Force
+    }
+
+    foreach ($requiredDll in @("SDL2.dll", "SDL2_image.dll")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $binDestination $requiredDll))) {
+            throw "Required runtime library was not staged: $requiredDll"
+        }
+    }
 
     $launcher = @'
 $ErrorActionPreference = "Stop"
@@ -307,30 +306,6 @@ finally {
 }
 '@
     Set-Content -LiteralPath (Join-Path $ArtifactRoot "run-engine-sim.ps1") -Value $launcher -Encoding Ascii
-}
-
-function Copy-RuntimeDependencies {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$SourceDirectory,
-        [Parameter(Mandatory = $true)]
-        [string]$DestinationDirectory
-    )
-
-    $runtimeLibraries = Get-ChildItem -LiteralPath $SourceDirectory -Filter "*.dll" -File
-    if ($runtimeLibraries.Count -eq 0) {
-        throw "No runtime DLLs were found in $SourceDirectory."
-    }
-
-    foreach ($library in $runtimeLibraries) {
-        Copy-Item -LiteralPath $library.FullName -Destination (Join-Path $DestinationDirectory $library.Name) -Force
-    }
-
-    foreach ($requiredDll in @("SDL2.dll", "SDL2_image.dll")) {
-        if (-not (Test-Path -LiteralPath (Join-Path $DestinationDirectory $requiredDll))) {
-            throw "Required runtime library was not staged: $requiredDll"
-        }
-    }
 }
 
 try {
@@ -398,7 +373,7 @@ try {
     $winFlexBison = Get-WinFlexBison -RepositoryRoot $repositoryRoot
     $flexVersion = Get-NativeCommandOutput -Executable $winFlexBison.Flex -Arguments @("--version") -Description "Flex version check"
     $bisonVersion = Get-NativeCommandOutput -Executable $winFlexBison.Bison -Arguments @("--version") -Description "Bison version check"
-    $dependencies = Get-VcpkgDependencies -RepositoryRoot $repositoryRoot -GitExecutable $git -Architecture $Architecture
+    $dependencies = Get-VcpkgDependencies -RepositoryRoot $repositoryRoot -GitExecutable $git
 
     $configureArguments = @(
         "-S", $repositoryRoot,
@@ -412,11 +387,13 @@ try {
         "-DBISON_EXECUTABLE=$($winFlexBison.Bison)",
         "-DSDL2_INCLUDE_DIR=$($dependencies.SdlInclude)",
         "-DSDL2_LIBRARY_TEMP=$($dependencies.SdlLibrary)",
-        "-DSDL2MAIN_LIBRARY=$($dependencies.SdlMainLibrary)",
         "-DSDL2_IMAGE_INCLUDE_DIR=$($dependencies.SdlInclude)",
         "-DSDL2_IMAGE_LIBRARY=$($dependencies.SdlImageLibrary)",
         "-DBOOST_ROOT=$($dependencies.BoostRoot)",
         "-DBOOST_LIBRARYDIR=$($dependencies.BoostLibraryDirectory)",
+        "-DBoost_INCLUDE_DIR=$($dependencies.BoostInclude)",
+        "-DBoost_LIBRARY_DIR_RELEASE=$($dependencies.BoostLibraryDirectory)",
+        "-DBoost_LIBRARY_DIR_DEBUG=$($dependencies.BoostDebugLibraryDirectory)",
         "-DBoost_NO_SYSTEM_PATHS=ON",
         "-DBoost_USE_STATIC_LIBS=ON",
         "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
@@ -451,12 +428,10 @@ try {
         if ($null -eq $builtExecutable) {
             throw "Build completed but engine-sim-app.exe was not produced."
         }
-
         Copy-Item -LiteralPath $builtExecutable.FullName -Destination $expectedExecutable -Force
     }
 
-    Copy-RuntimeResources -RepositoryRoot $repositoryRoot -ArtifactRoot $artifactRoot
-    Copy-RuntimeDependencies -SourceDirectory $dependencies.DynamicBin -DestinationDirectory $artifactBin
+    Stage-ReleasePackage -RepositoryRoot $repositoryRoot -ArtifactRoot $artifactRoot -DynamicBin $dependencies.DynamicBin
 
     $sourceCommit = Get-NativeCommandOutput -Executable $git -Arguments @("-C", $repositoryRoot, "rev-parse", "HEAD") -Description "Source revision check"
     $visualStudioVersion = "Detected by CMake generator"
@@ -502,7 +477,8 @@ try {
             visualStudio = $visualStudioVersion
             flex = ($flexVersion -split "`r?`n" | Select-Object -First 1)
             bison = ($bisonVersion -split "`r?`n" | Select-Object -First 1)
-            vcpkg = $dependencies.Version
+            vcpkgTag = $dependencies.Version
+            vcpkgCommit = $dependencies.Commit
             vcpkgDynamicTriplet = $dependencies.DynamicTriplet
             vcpkgStaticTriplet = $dependencies.StaticTriplet
         }
