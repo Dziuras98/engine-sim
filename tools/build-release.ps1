@@ -252,26 +252,32 @@ try {
         if (-not (Test-Path -LiteralPath $boostBootstrap)) {
             throw "Boost bootstrap script was not found after extraction."
         }
-        Run-Native $boostBootstrap @() "Boost bootstrap"
-        $boostB2 = Join-Path $boostSource "b2.exe"
-        if (-not (Test-Path -LiteralPath $boostB2)) {
-            throw "Boost b2.exe was not produced by bootstrap."
-        }
         $boostJobs = if ($Parallel -gt 0) { $Parallel } else { [Math]::Max(1, [Environment]::ProcessorCount) }
-        Run-Native $boostB2 @(
-            "--with-filesystem",
-            "--with-system",
-            "toolset=msvc-14.3",
-            "address-model=64",
-            "variant=release",
-            "link=static",
-            "runtime-link=shared",
-            "threading=multi",
-            "--layout=versioned",
-            "--stagedir=$boostStage",
-            "-j$boostJobs",
-            "stage"
-        ) "Boost.Filesystem build"
+        Push-Location -LiteralPath $boostSource
+        try {
+            Run-Native $boostBootstrap @() "Boost bootstrap"
+            $boostB2 = Join-Path $boostSource "b2.exe"
+            if (-not (Test-Path -LiteralPath $boostB2)) {
+                throw "Boost b2.exe was not produced by bootstrap."
+            }
+            Run-Native $boostB2 @(
+                "--with-filesystem",
+                "--with-system",
+                "toolset=msvc-14.3",
+                "address-model=64",
+                "variant=release",
+                "link=static",
+                "runtime-link=shared",
+                "threading=multi",
+                "--layout=versioned",
+                "--stagedir=$boostStage",
+                "-j$boostJobs",
+                "stage"
+            ) "Boost.Filesystem build"
+        }
+        finally {
+            Pop-Location
+        }
     }
     $boostFilesystemLibrary = Get-ChildItem -LiteralPath $boostLib -Filter "*boost_filesystem*.lib" -File | Select-Object -First 1
     if ($null -eq $boostFilesystemLibrary) {
