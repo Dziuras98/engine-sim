@@ -58,7 +58,7 @@ function Invoke-NativeCommand {
     )
 
     Write-Host "> $Executable $($Arguments -join ' ')"
-    & $Executable @Arguments
+    & $Executable @Arguments 2>&1 | ForEach-Object { Write-Host $_ }
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
         throw "$Description failed with exit code $exitCode."
@@ -110,7 +110,7 @@ function Get-WinFlexBison {
 
     if ($downloadRequired) {
         Write-Host "Downloading WinFlexBison $WinFlexBisonVersion..."
-        Invoke-WebRequest -Uri $WinFlexBisonUrl -OutFile $archivePath
+        $null = Invoke-WebRequest -Uri $WinFlexBisonUrl -OutFile $archivePath
     }
 
     $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
