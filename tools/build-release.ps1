@@ -20,6 +20,7 @@ $WinFlexBisonVersion = "2.5.25"
 $WinFlexBisonUrl = "https://github.com/lexxmark/winflexbison/releases/download/v2.5.25/win_flex_bison-2.5.25.zip"
 $WinFlexBisonSha256 = "8d324b62be33604b2c45ad1dd34ab93d722534448f55a16ca7292de32b6ac135"
 $VcpkgVersion = "2022.02.23"
+$VcpkgCommit = "b86c0c35b88e2bf3557ff49dc831689c2f085090"
 $VcpkgRepository = "https://github.com/microsoft/vcpkg.git"
 $DynamicTriplet = "x64-windows"
 $StaticTriplet = "x64-windows-static-md"
@@ -176,11 +177,10 @@ try {
         New-Item -ItemType Directory -Path (Split-Path -Parent $vcpkgRoot) -Force | Out-Null
         Run-Native $git @("clone", "--branch", $VcpkgVersion, "--depth", "1", $VcpkgRepository, $vcpkgRoot) "vcpkg checkout"
     }
-    $vcpkgTag = Capture-Native $git @("-C", $vcpkgRoot, "describe", "--tags", "--exact-match") "vcpkg tag check"
-    if ($vcpkgTag -ne $VcpkgVersion) {
-        throw "Unexpected vcpkg checkout '$vcpkgTag'; expected '$VcpkgVersion'."
+    $actualVcpkgCommit = Capture-Native $git @("-C", $vcpkgRoot, "rev-parse", "HEAD") "vcpkg revision check"
+    if ($actualVcpkgCommit -ne $VcpkgCommit) {
+        throw "Unexpected vcpkg commit '$actualVcpkgCommit'; expected '$VcpkgCommit'."
     }
-    $vcpkgCommit = Capture-Native $git @("-C", $vcpkgRoot, "rev-parse", "HEAD") "vcpkg revision check"
     $vcpkgExe = Join-Path $vcpkgRoot "vcpkg.exe"
     if (-not (Test-Path -LiteralPath $vcpkgExe)) {
         Run-Native (Join-Path $vcpkgRoot "bootstrap-vcpkg.bat") @("-disableMetrics") "vcpkg bootstrap"
@@ -344,8 +344,8 @@ finally {
             visualStudio = $visualStudioVersion
             flex = ($flexVersion -split "`r?`n" | Select-Object -First 1)
             bison = ($bisonVersion -split "`r?`n" | Select-Object -First 1)
-            vcpkgTag = $vcpkgTag
-            vcpkgCommit = $vcpkgCommit
+            vcpkgTag = $VcpkgVersion
+            vcpkgCommit = $actualVcpkgCommit
             vcpkgDynamicTriplet = $DynamicTriplet
             vcpkgStaticTriplet = $StaticTriplet
         }
