@@ -11,6 +11,15 @@ on:
       - .gitmodules
       - dependencies/**/CMakeLists.txt
       - .github/workflows/nc-001-release-build.yml
+  pull_request:
+    branches:
+      - master
+    paths:
+      - tools/build-release.ps1
+      - CMakeLists.txt
+      - .gitmodules
+      - dependencies/**/CMakeLists.txt
+      - .github/workflows/nc-001-release-build.yml
 
 jobs:
   release-build:
