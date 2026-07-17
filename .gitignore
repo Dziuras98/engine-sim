@@ -4,6 +4,10 @@ workspace/
 # Build directory
 build/
 
+# Reproducible build caches and staged artifacts
+.tools/
+artifacts/
+
 # clangd cache and code completion files
 .cache
 compile_commands.json
