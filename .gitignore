@@ -1,12 +1,50 @@
-# Ignore user's workspace
+# User workspace
 workspace/
 
-# Build directory
+# CMake build trees and generated files
 build/
-
-# clangd cache and code completion files
-.cache
+build-*/
+cmake-build-*/
+out/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
 compile_commands.json
+
+# Reproducible build caches and staged artifacts
+.tools/
+artifacts/
+
+# Visual Studio generated files
+.vs/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.VC.db
+*.opendb
+x64/
+Debug/
+Release/
+RelWithDebInfo/
+MinSizeRel/
+
+# clangd and editor caches
+.cache/
+.idea/
+.vscode/
+
+# Temporary files and logs
+*.log
+*.tmp
+*.swp
+*~
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
 
 # Blender temporary files
 *.blend1

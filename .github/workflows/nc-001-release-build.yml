@@ -1,0 +1,158 @@
+name: NC-001 Release build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/nc-001-release-build
+    paths:
+      - tools/build-release.ps1
+      - CMakeLists.txt
+      - .gitmodules
+      - dependencies/**/CMakeLists.txt
+      - docs/BUILDING.md
+      - docs/decisions/0001-reproducible-windows-release-toolchain.md
+      - docs/handoffs/NC-001.md
+      - .github/workflows/nc-001-release-build.yml
+  pull_request:
+    branches:
+      - master
+      - agent/nc-000-repository-bootstrap
+    paths:
+      - tools/build-release.ps1
+      - CMakeLists.txt
+      - .gitmodules
+      - dependencies/**/CMakeLists.txt
+      - docs/BUILDING.md
+      - docs/decisions/0001-reproducible-windows-release-toolchain.md
+      - docs/handoffs/NC-001.md
+      - .github/workflows/nc-001-release-build.yml
+
+concurrency:
+  group: nc-001-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-build:
+    name: Clean Release build
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout with pinned submodules
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Record pinned submodules
+        shell: pwsh
+        run: |
+          $diagnostics = Join-Path $PWD "artifacts/diagnostics"
+          New-Item -ItemType Directory -Path $diagnostics -Force | Out-Null
+          git submodule status --recursive |
+            Tee-Object -FilePath (Join-Path $diagnostics "submodules.txt")
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to record submodule revisions."
+          }
+
+      - name: Build engine-sim Release
+        shell: pwsh
+        run: |
+          $diagnostics = Join-Path $PWD "artifacts/diagnostics"
+          New-Item -ItemType Directory -Path $diagnostics -Force | Out-Null
+          $combinedLog = Join-Path $diagnostics "build-release.log"
+
+          & pwsh -NoProfile -File .\tools\build-release.ps1 2>&1 |
+            Tee-Object -FilePath $combinedLog
+          $buildExitCode = $LASTEXITCODE
+
+          if ($buildExitCode -ne 0) {
+            Write-Host "--- build log tail ---"
+            Get-Content -LiteralPath $combinedLog -Tail 120
+            throw "tools/build-release.ps1 failed with exit code $buildExitCode."
+          }
+
+      - name: Verify artifact contract
+        shell: pwsh
+        run: |
+          $requiredPaths = @(
+            "artifacts/Release/bin/engine-sim-app.exe",
+            "artifacts/Release/bin/SDL2.dll",
+            "artifacts/Release/bin/SDL2_image.dll",
+            "artifacts/Release/bin/libpng16.dll",
+            "artifacts/Release/bin/z.dll",
+            "artifacts/Release/bin/delta.conf",
+            "artifacts/Release/assets/main.mr",
+            "artifacts/Release/engine-resources/fonts",
+            "artifacts/Release/engine-resources/shaders",
+            "artifacts/Release/lib/engine-sim.lib",
+            "artifacts/Release/build-info.json",
+            "artifacts/Release/run-engine-sim.ps1"
+          )
+
+          foreach ($path in $requiredPaths) {
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Required Release artifact is missing: $path"
+            }
+          }
+
+          $buildInfo = Get-Content -LiteralPath "artifacts/Release/build-info.json" -Raw | ConvertFrom-Json
+          if ($buildInfo.configuration -ne "Release") {
+            throw "Unexpected build configuration: $($buildInfo.configuration)"
+          }
+          if ($buildInfo.executable -ne "bin/engine-sim-app.exe") {
+            throw "Unexpected executable path: $($buildInfo.executable)"
+          }
+          if ([double]$buildInfo.dependencySeconds -le 0) {
+            throw "Dependency setup time was not recorded."
+          }
+          if ([double]$buildInfo.configureSeconds -le 0) {
+            throw "Configure time was not recorded."
+          }
+          if ([double]$buildInfo.compileSeconds -le 0) {
+            throw "Compilation time was not recorded."
+          }
+          if ($buildInfo.environment.vcpkgCommit -ne "d015e31e90838a4c9dfa3eed45979bc70d9357fc") {
+            throw "Unexpected vcpkg revision: $($buildInfo.environment.vcpkgCommit)"
+          }
+          if ($buildInfo.environment.boost -ne "1.78.0") {
+            throw "Unexpected Boost version: $($buildInfo.environment.boost)"
+          }
+
+          Write-Host "Release artifact contract verified."
+          Write-Host "Dependency setup: $($buildInfo.dependencySeconds) s"
+          Write-Host "Configure time: $($buildInfo.configureSeconds) s"
+          Write-Host "Compile time: $($buildInfo.compileSeconds) s"
+          Write-Host "Environment: $($buildInfo.environment.operatingSystem); CMake $($buildInfo.environment.cmake); Visual Studio $($buildInfo.environment.visualStudio)"
+
+      - name: Verify non-zero error contract
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File .\tools\build-release.ps1 `
+            -Generator "NC-001 intentionally missing generator" `
+            -BuildDirectory "build/error-contract" `
+            -ArtifactDirectory "artifacts/error-contract"
+
+          $failureCode = $LASTEXITCODE
+          if ($failureCode -eq 0) {
+            throw "The build script returned success for an invalid generator."
+          }
+
+          Write-Host "Invalid generator returned expected non-zero exit code: $failureCode"
+          exit 0
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nc-001-build-diagnostics
+          path: artifacts/diagnostics
+          if-no-files-found: error
+
+      - name: Upload Release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-sim-release-nc-001
+          path: artifacts/Release
+          if-no-files-found: error
