@@ -29,6 +29,35 @@ add_subdirectory(
     "${ENGINE_SIM_ROOT}"
     "${CMAKE_BINARY_DIR}/engine-sim-source")
 
+# Piranha commit 432f0b122bb1663b686c553c7e7269300afac3bc uses the
+# removed Boost.Filesystem path::is_complete() API. Replace exactly its
+# path.cpp translation unit with a recorder-owned compatibility source that
+# changes only that call to is_absolute(). The external submodule remains
+# immutable and its remaining sources are compiled normally.
+get_target_property(PIRANHA_SOURCES piranha SOURCES)
+set(PIRANHA_FILTERED_SOURCES)
+set(PIRANHA_PATH_SOURCE_COUNT 0)
+foreach (PIRANHA_SOURCE IN LISTS PIRANHA_SOURCES)
+    get_filename_component(PIRANHA_SOURCE_NAME "${PIRANHA_SOURCE}" NAME)
+    if (PIRANHA_SOURCE_NAME STREQUAL "path.cpp")
+        math(EXPR PIRANHA_PATH_SOURCE_COUNT "${PIRANHA_PATH_SOURCE_COUNT} + 1")
+    else ()
+        list(APPEND PIRANHA_FILTERED_SOURCES "${PIRANHA_SOURCE}")
+    endif ()
+endforeach ()
+
+if (NOT PIRANHA_PATH_SOURCE_COUNT EQUAL 1)
+    message(FATAL_ERROR
+        "Expected exactly one pinned piranha path.cpp source, observed "
+        "${PIRANHA_PATH_SOURCE_COUNT}")
+endif ()
+
+set_property(TARGET piranha PROPERTY SOURCES ${PIRANHA_FILTERED_SOURCES})
+target_sources(piranha PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/compat/piranha_path_boost_compat.cpp")
+target_include_directories(piranha PRIVATE
+    "${ENGINE_SIM_ROOT}/dependencies/submodules/piranha/include")
+
 add_library(esrecord-lib SHARED
     esrecord_api.h
     esrecord_internal.h
