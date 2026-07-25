@@ -38,6 +38,19 @@ jobs:
           clean: true
           submodules: recursive
 
+      - name: Capture dependency source identity
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Path ci-artifacts -Force | Out-Null
+          git submodule status --recursive |
+            Out-File -FilePath ci-artifacts/submodules.txt -Encoding utf8
+          Copy-Item dependencies/submodules/piranha/src/path.cpp `
+            ci-artifacts/piranha-path.cpp
+          Copy-Item dependencies/submodules/piranha/include/path.h `
+            ci-artifacts/piranha-path.h
+          git -C dependencies/submodules/piranha rev-parse HEAD |
+            Out-File -FilePath ci-artifacts/piranha-commit.txt -Encoding ascii
+
       - name: Configure MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -57,7 +70,6 @@ jobs:
       - name: Configure recorder source build
         shell: powershell
         run: |
-          New-Item -ItemType Directory -Path ci-artifacts -Force | Out-Null
           $flex = (Get-Command win_flex.exe -ErrorAction Stop).Source
           $bison = (Get-Command win_bison.exe -ErrorAction Stop).Source
           $toolchain = Join-Path $env:VCPKG_INSTALLATION_ROOT "scripts/buildsystems/vcpkg.cmake"
