@@ -23,17 +23,21 @@ bool equals(const std::array<char, 4> &id, const char *expected) {
     return std::memcmp(id.data(), expected, id.size()) == 0;
 }
 
-bool skipChunk(std::ifstream &stream, const std::uint32_t size) {
-    const std::uint64_t padded =
-        static_cast<std::uint64_t>(size) + (size & 1U);
-    if (padded > static_cast<std::uint64_t>(
+bool skipBytes(std::ifstream &stream, const std::uint64_t size) {
+    if (size > static_cast<std::uint64_t>(
             std::numeric_limits<std::streamoff>::max()))
     {
         return false;
     }
 
-    stream.seekg(static_cast<std::streamoff>(padded), std::ios::cur);
+    stream.seekg(static_cast<std::streamoff>(size), std::ios::cur);
     return stream.good();
+}
+
+bool skipChunk(std::ifstream &stream, const std::uint32_t size) {
+    return skipBytes(
+        stream,
+        static_cast<std::uint64_t>(size) + (size & 1U));
 }
 
 } // namespace
@@ -49,7 +53,7 @@ bool readMonoPcm16Wave(const std::string &path, Pcm16Wave &wave) {
     std::array<char, 4> id{};
     std::uint32_t riffSize = 0;
     if (!readId(stream, id) || !equals(id, "RIFF") ||
-        !readValue(stream, riffSize) ||
+        !readValue(stream, riffSize) || riffSize < 4 ||
         !readId(stream, id) || !equals(id, "WAVE"))
     {
         return false;
@@ -86,22 +90,27 @@ bool readMonoPcm16Wave(const std::string &path, Pcm16Wave &wave) {
             }
 
             const std::uint32_t remaining = chunkSize - 16;
-            if (remaining > 0 && !skipChunk(stream, remaining)) {
+            if (!skipBytes(stream, remaining)) {
                 return false;
             }
-            else if ((chunkSize & 1U) != 0) {
-                stream.seekg(1, std::ios::cur);
-                if (!stream.good()) {
-                    return false;
-                }
+            if ((chunkSize & 1U) != 0 && !skipBytes(stream, 1)) {
+                return false;
+            }
+
+            if (format != 1 || channels != 1 || bitsPerSample != 16 ||
+                sampleRate == 0 || blockAlign != 2 ||
+                byteRate != sampleRate * blockAlign)
+            {
+                return false;
             }
 
             foundFormat = true;
         }
         else if (equals(id, "data")) {
-            if (!foundFormat || format != 1 || channels != 1 ||
-                bitsPerSample != 16 || sampleRate == 0 ||
-                (chunkSize % sizeof(std::int16_t)) != 0)
+            if (!foundFormat ||
+                (chunkSize % sizeof(std::int16_t)) != 0 ||
+                chunkSize > static_cast<std::uint32_t>(
+                    std::numeric_limits<std::streamsize>::max()))
             {
                 return false;
             }
