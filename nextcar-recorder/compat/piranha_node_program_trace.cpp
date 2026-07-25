@@ -11,6 +11,8 @@
 #include <assert.h>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
+#include <typeinfo>
 
 namespace {
 
@@ -23,6 +25,47 @@ void appendNodeTrace(const std::string &message) {
     if (trace.is_open()) {
         trace << message << '\n';
         trace.flush();
+    }
+}
+
+void appendNodeDescription(
+    const int index,
+    const int nodeCount,
+    const piranha::Node *node)
+{
+    std::ostringstream message;
+    message
+        << "before evaluate: index=" << index << '/' << nodeCount
+        << ", address=" << static_cast<const void *>(node)
+        << ", rtti=" << typeid(*node).name()
+        << ", id=" << node->getId()
+        << ", name=" << node->getName()
+        << ", builtin=" << node->getBuiltinName()
+        << ", inputs=" << node->getInputCount()
+        << ", outputs=" << node->getOutputCount();
+    appendNodeTrace(message.str());
+
+    for (int inputIndex = 0; inputIndex < node->getInputCount(); ++inputIndex) {
+        const piranha::Node::NodeInputPort *port = node->getInput(inputIndex);
+        const bool hasStorage = port != nullptr && port->input != nullptr;
+        const bool hasOutput = hasStorage && *port->input != nullptr;
+
+        std::ostringstream inputMessage;
+        inputMessage
+            << "input: node_index=" << index
+            << ", input_index=" << inputIndex
+            << ", name=" << (port == nullptr ? "<null-port>" : port->name)
+            << ", storage=" << hasStorage
+            << ", connected_output=" << hasOutput
+            << ", dependency="
+            << (port == nullptr
+                ? nullptr
+                : static_cast<const void *>(port->dependency))
+            << ", node_input="
+            << (port == nullptr
+                ? nullptr
+                : static_cast<const void *>(port->nodeInput));
+        appendNodeTrace(inputMessage.str());
     }
 }
 
@@ -166,16 +209,10 @@ bool piranha::NodeProgram::execute() {
     }
 
     // Execute all nodes. Flush each pre-evaluate record so an access violation
-    // preserves the exact last node entered.
+    // preserves the exact class and port connectivity of the last node entered.
     for (int i = 0; i < nodeCount; i++) {
         Node *node = m_topLevelContainer.getNode(i);
-        appendNodeTrace(
-            "before evaluate: index=" + std::to_string(i) +
-            ", id=" + std::to_string(node->getId()) +
-            ", name=" + node->getName() +
-            ", builtin=" + node->getBuiltinName() +
-            ", inputs=" + std::to_string(node->getInputCount()) +
-            ", outputs=" + std::to_string(node->getOutputCount()));
+        appendNodeDescription(i, nodeCount, node);
 
         const bool result = node->evaluate();
         appendNodeTrace(
