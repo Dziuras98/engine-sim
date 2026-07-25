@@ -1,19 +1,21 @@
-option(
-    NEXTCAR_RECORDER_ENABLED
-    "Build the nEXTcAR offline recorder DLL"
-    OFF)
+cmake_minimum_required(VERSION 3.20)
 
-if (NOT NEXTCAR_RECORDER_ENABLED)
-    return()
-endif ()
+project(nextcar-recorder LANGUAGES CXX)
 
 if (NOT WIN32)
     message(FATAL_ERROR "The nEXTcAR recorder DLL currently supports Windows x64 only")
 endif ()
 
-if (NOT PIRANHA_ENABLED)
-    message(FATAL_ERROR "NEXTCAR_RECORDER_ENABLED requires PIRANHA_ENABLED")
-endif ()
+# The recorder is an explicit offline build. Keep UI and unrelated integration
+# features disabled while retaining the scripting compiler required for .mr files.
+set(DTV OFF CACHE BOOL "Enable video output" FORCE)
+set(DISCORD_ENABLED OFF CACHE BOOL "Enable Discord Rich Presence" FORCE)
+set(PIRANHA_ENABLED ON CACHE BOOL "Enable scripting input" FORCE)
+
+set(ENGINE_SIM_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_subdirectory(
+    "${ENGINE_SIM_ROOT}"
+    "${CMAKE_BINARY_DIR}/engine-sim-source")
 
 add_library(esrecord-lib SHARED
     esrecord_api.h
@@ -30,10 +32,10 @@ target_link_libraries(esrecord-lib
 target_include_directories(esrecord-lib
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}/..
-        ${CMAKE_CURRENT_SOURCE_DIR}/../include
-        ${CMAKE_CURRENT_SOURCE_DIR}/../scripting/include
-        ${CMAKE_CURRENT_SOURCE_DIR}/../dependencies/submodules)
+        ${ENGINE_SIM_ROOT}
+        ${ENGINE_SIM_ROOT}/include
+        ${ENGINE_SIM_ROOT}/scripting/include
+        ${ENGINE_SIM_ROOT}/dependencies/submodules)
 
 target_compile_definitions(esrecord-lib
     PRIVATE
