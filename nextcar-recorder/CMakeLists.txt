@@ -8,7 +8,7 @@ endif ()
 
 option(ESRECORD_ENABLE_ASAN
     "Instrument the native recorder and scripting stack with MSVC AddressSanitizer"
-    OFF)
+    ON)
 
 # The frozen engine-sim dependency graph contains legacy projects whose policy
 # declarations predate CMake 3.5. CMake 4 requires an explicit compatibility
