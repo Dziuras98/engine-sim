@@ -114,11 +114,7 @@ bool initialiseUnlocked(Instance &instance) {
         }
 
         ysWindowsAudioWaveFile waveFile;
-        if (waveFile.OpenFile(response->getFilename().c_str()) != YDS_ERROR_CODE_OK) {
-            releaseSimulator(instance);
-            return false;
-        }
-
+        waveFile.OpenFile(response->getFilename().c_str());
         waveFile.InitializeInternalBuffer(waveFile.GetSampleCount());
         waveFile.FillBuffer(0);
         waveFile.CloseFile();
