@@ -6,6 +6,12 @@ if (NOT WIN32)
     message(FATAL_ERROR "The nEXTcAR recorder DLL currently supports Windows x64 only")
 endif ()
 
+# The frozen engine-sim dependency graph contains legacy projects whose policy
+# declarations predate CMake 3.5. CMake 4 requires an explicit compatibility
+# floor before those projects are configured.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING
+    "Minimum policy compatibility for frozen engine-sim dependencies" FORCE)
+
 # The recorder is an explicit offline build. Keep UI and unrelated integration
 # features disabled while retaining the scripting compiler required for .mr files.
 set(DTV OFF CACHE BOOL "Enable video output" FORCE)
