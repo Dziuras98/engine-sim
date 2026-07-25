@@ -134,13 +134,20 @@ if (MSVC AND ESRECORD_ENABLE_ASAN)
         target_compile_options(${ESRECORD_ASAN_TARGET} PRIVATE
             /fsanitize=address
             /Zi)
+        # vcpkg Boost and the frozen solver are built without MSVC STL
+        # container annotations. Keep the annotation mode consistent while
+        # retaining AddressSanitizer's heap/stack instrumentation.
+        target_compile_definitions(${ESRECORD_ASAN_TARGET} PRIVATE
+            _DISABLE_VECTOR_ANNOTATION
+            _DISABLE_STRING_ANNOTATION
+            _DISABLE_OPTIONAL_ANNOTATION)
     endforeach ()
 
     target_link_options(esrecord-lib PRIVATE
-        /fsanitize=address
+        /INFERASANLIBS
         /DEBUG)
     target_link_options(nextcar-recorder-abi-runtime-test PRIVATE
-        /fsanitize=address
+        /INFERASANLIBS
         /DEBUG)
 endif ()
 
