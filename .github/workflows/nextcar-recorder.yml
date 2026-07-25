@@ -42,7 +42,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Dziuras98/ESRecorder-nextcar
-          ref: 5180102b5f0540db5d777d85853180879af41934
+          ref: bb03c4415c2e65d4e744c00382790c75c29d1cac
           path: fixture/esrecorder
           clean: true
 
