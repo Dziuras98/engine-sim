@@ -14,9 +14,15 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING
 
 # The recorder is an explicit offline build. Keep UI and unrelated integration
 # features disabled while retaining the scripting compiler required for .mr files.
+set(ENGINE_SIM_HEADLESS ON CACHE BOOL "Build engine-sim without UI dependencies" FORCE)
 set(DTV OFF CACHE BOOL "Enable video output" FORCE)
 set(DISCORD_ENABLED OFF CACHE BOOL "Enable Discord Rich Presence" FORCE)
 set(PIRANHA_ENABLED ON CACHE BOOL "Enable scripting input" FORCE)
+
+# The historical core target links delta-basic even though its simulation
+# sources do not use it. In a headless build, provide an empty compatibility
+# target and do not configure delta-studio/SDL2.
+add_library(delta-basic INTERFACE)
 
 set(ENGINE_SIM_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 add_subdirectory(
@@ -27,13 +33,14 @@ add_library(esrecord-lib SHARED
     esrecord_api.h
     esrecord_internal.h
     esrecord_engine.cpp
-    esrecord_record.cpp)
+    esrecord_record.cpp
+    wav_reader.h
+    wav_reader.cpp)
 
 target_link_libraries(esrecord-lib
     PRIVATE
         engine-sim
-        engine-sim-script-interpreter
-        delta-basic)
+        engine-sim-script-interpreter)
 
 target_include_directories(esrecord-lib
     PRIVATE
