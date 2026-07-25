@@ -9,6 +9,7 @@
 #include "../include/vehicle.h"
 
 #include <array>
+#include <atomic>
 #include <mutex>
 #include <string>
 
@@ -19,8 +20,14 @@ struct Instance {
     Engine *engine = nullptr;
     Transmission *transmission = nullptr;
     Vehicle *vehicle = nullptr;
-    ESRecordState state = ESRECORD_STATE_IDLE;
-    std::int32_t progress = 0;
+
+    // Recording holds mutex for the complete native operation. State, progress
+    // and readiness remain atomic so managed status polling never waits for the
+    // recording call to finish.
+    std::atomic<ESRecordState> state{ESRECORD_STATE_IDLE};
+    std::atomic<std::int32_t> progress{0};
+    std::atomic<bool> ready{false};
+
     std::string engineName;
     std::mutex mutex;
 };
