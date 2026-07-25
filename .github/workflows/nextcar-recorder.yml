@@ -29,7 +29,7 @@ jobs:
   windows-source-build:
     name: Windows x64 source DLL and ABI
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Check out engine-sim and recursive dependencies
@@ -43,14 +43,12 @@ jobs:
         with:
           arch: x64
 
-      - name: Install Boost
-        id: install-boost
-        uses: MarkusJx/install-boost@v2.3.0
-        with:
-          boost_version: 1.78.0
-          boost_install_dir: ${{ runner.temp }}/boost
-          platform_version: 2022
-          toolset: msvc
+      - name: Install Boost.Filesystem
+        shell: powershell
+        run: |
+          $vcpkg = Join-Path $env:VCPKG_INSTALLATION_ROOT "vcpkg.exe"
+          & $vcpkg install boost-filesystem:x64-windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install Flex and Bison
         shell: powershell
@@ -58,16 +56,16 @@ jobs:
 
       - name: Configure recorder source build
         shell: powershell
-        env:
-          BOOST_ROOT: ${{ steps.install-boost.outputs.BOOST_ROOT }}
         run: |
           New-Item -ItemType Directory -Path ci-artifacts -Force | Out-Null
           $flex = (Get-Command win_flex.exe -ErrorAction Stop).Source
           $bison = (Get-Command win_bison.exe -ErrorAction Stop).Source
+          $toolchain = Join-Path $env:VCPKG_INSTALLATION_ROOT "scripts/buildsystems/vcpkg.cmake"
           $command = 'cmake -S nextcar-recorder -B build-nextcar-recorder -A x64 ' +
+            '"-DCMAKE_TOOLCHAIN_FILE=' + $toolchain + '" ' +
+            '"-DVCPKG_TARGET_TRIPLET=x64-windows" ' +
             '"-DFLEX_EXECUTABLE=' + $flex + '" ' +
             '"-DBISON_EXECUTABLE=' + $bison + '" ' +
-            '"-DBOOST_ROOT=' + $env:BOOST_ROOT + '" ' +
             '> ci-artifacts\configure.log 2>&1'
           cmd.exe /d /s /c $command
           $configureExitCode = $LASTEXITCODE
