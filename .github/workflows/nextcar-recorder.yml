@@ -49,26 +49,33 @@ jobs:
       - name: Configure recorder source build
         shell: powershell
         run: |
+          New-Item -ItemType Directory -Path ci-artifacts -Force | Out-Null
           $flex = (Get-Command win_flex.exe -ErrorAction Stop).Source
           $bison = (Get-Command win_bison.exe -ErrorAction Stop).Source
           cmake -S nextcar-recorder -B build-nextcar-recorder -A x64 `
             "-DFLEX_EXECUTABLE=$flex" `
-            "-DBISON_EXECUTABLE=$bison"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            "-DBISON_EXECUTABLE=$bison" 2>&1 |
+            Tee-Object -FilePath ci-artifacts/configure.log
+          $configureExitCode = $LASTEXITCODE
+          if ($configureExitCode -ne 0) { exit $configureExitCode }
 
       - name: Build recorder DLL and ABI test
         shell: powershell
         run: |
           cmake --build build-nextcar-recorder --config Release `
-            --target esrecord-lib nextcar-recorder-abi-test
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            --target esrecord-lib nextcar-recorder-abi-test 2>&1 |
+            Tee-Object -FilePath ci-artifacts/build.log
+          $buildExitCode = $LASTEXITCODE
+          if ($buildExitCode -ne 0) { exit $buildExitCode }
 
       - name: Run ABI layout test
         shell: powershell
         run: |
           ctest --test-dir build-nextcar-recorder -C Release `
-            --output-on-failure -R nextcar-recorder-abi
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            --output-on-failure -R nextcar-recorder-abi 2>&1 |
+            Tee-Object -FilePath ci-artifacts/ctest.log
+          $testExitCode = $LASTEXITCODE
+          if ($testExitCode -ne 0) { exit $testExitCode }
 
       - name: Verify exported DLL exists
         shell: powershell
@@ -78,7 +85,8 @@ jobs:
           if ($dlls.Count -ne 1) {
             throw "Expected exactly one esrecord-lib.dll, observed $($dlls.Count)."
           }
-          $dlls[0] | Format-List FullName, Length, LastWriteTimeUtc
+          $dlls[0] | Format-List FullName, Length, LastWriteTimeUtc |
+            Tee-Object -FilePath ci-artifacts/outputs.txt
 
       - name: Upload source-built recorder
         uses: actions/upload-artifact@v4
@@ -89,3 +97,12 @@ jobs:
           path: |
             build-nextcar-recorder/**/esrecord-lib.dll
             build-nextcar-recorder/**/nextcar-recorder-abi-test.exe
+
+      - name: Upload recorder diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextcar-recorder-diagnostics-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: ci-artifacts/**
