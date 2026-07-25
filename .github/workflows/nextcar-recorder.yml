@@ -1,0 +1,91 @@
+name: nEXTcAR recorder port
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "CMakeLists.txt"
+      - "include/engine.h"
+      - "include/ignition_module.h"
+      - "scripting/include/engine_node.h"
+      - "scripting/src/compiler.cpp"
+      - "nextcar-recorder/**"
+      - ".github/workflows/nextcar-recorder.yml"
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nextcar-recorder-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-source-build:
+    name: Windows x64 source DLL and ABI
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out engine-sim and recursive dependencies
+        uses: actions/checkout@v4
+        with:
+          clean: true
+          submodules: recursive
+
+      - name: Configure MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Flex and Bison
+        shell: powershell
+        run: choco install winflexbison3 --yes --no-progress
+
+      - name: Configure recorder source build
+        shell: powershell
+        run: |
+          $flex = (Get-Command win_flex.exe -ErrorAction Stop).Source
+          $bison = (Get-Command win_bison.exe -ErrorAction Stop).Source
+          cmake -S nextcar-recorder -B build-nextcar-recorder -A x64 `
+            "-DFLEX_EXECUTABLE=$flex" `
+            "-DBISON_EXECUTABLE=$bison"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build recorder DLL and ABI test
+        shell: powershell
+        run: |
+          cmake --build build-nextcar-recorder --config Release `
+            --target esrecord-lib nextcar-recorder-abi-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run ABI layout test
+        shell: powershell
+        run: |
+          ctest --test-dir build-nextcar-recorder -C Release `
+            --output-on-failure -R nextcar-recorder-abi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify exported DLL exists
+        shell: powershell
+        run: |
+          $dlls = @(Get-ChildItem build-nextcar-recorder -Recurse `
+            -Filter esrecord-lib.dll -File)
+          if ($dlls.Count -ne 1) {
+            throw "Expected exactly one esrecord-lib.dll, observed $($dlls.Count)."
+          }
+          $dlls[0] | Format-List FullName, Length, LastWriteTimeUtc
+
+      - name: Upload source-built recorder
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextcar-esrecord-lib-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            build-nextcar-recorder/**/esrecord-lib.dll
+            build-nextcar-recorder/**/nextcar-recorder-abi-test.exe
