@@ -63,11 +63,11 @@ es_script::Compiler::Output es_script::Compiler::execute() {
     Output *currentOutput = output();
     *currentOutput = Output{};
 
-    const bool result = m_program.execute();
-    if (!result) {
-        return Output{};
-    }
-
+    // Preserve the historical interpreter contract: action nodes may populate
+    // the output even when NodeProgram::execute() reports false for a void/root
+    // program. Returning an empty object here discards valid side effects from
+    // set_engine, set_vehicle and set_transmission.
+    m_program.execute();
     return *currentOutput;
 }
 
