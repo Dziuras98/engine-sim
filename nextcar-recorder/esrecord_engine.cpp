@@ -8,7 +8,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
+#include <limits>
 
 namespace nextcar::recorder {
 
@@ -24,6 +26,8 @@ Instance *getInstance(const std::int32_t instanceId) {
 }
 
 void releaseSimulator(Instance &instance) {
+    instance.ready = false;
+
     if (instance.simulator != nullptr) {
         instance.simulator->releaseSimulation();
         delete instance.simulator;
@@ -90,8 +94,18 @@ bool initialiseUnlocked(Instance &instance) {
     }
 
     instance.engine->calculateDisplacement();
+
+    const double simulationFrequency =
+        instance.engine->getSimulationFrequency();
+    if (!std::isfinite(simulationFrequency) ||
+        simulationFrequency < 1.0 ||
+        simulationFrequency > static_cast<double>(std::numeric_limits<int>::max()))
+    {
+        releaseSimulator(instance);
+        return false;
+    }
     instance.simulator->setSimulationFrequency(
-        instance.engine->getSimulationFrequency());
+        static_cast<int>(simulationFrequency));
 
     Synthesizer::AudioParameters audioParameters =
         instance.simulator->synthesizer().getAudioParameters();
@@ -114,7 +128,9 @@ bool initialiseUnlocked(Instance &instance) {
 
         Pcm16Wave wave;
         if (!readMonoPcm16Wave(response->getFilename(), wave) ||
-            wave.sampleRate != 44100)
+            wave.sampleRate != 44100 ||
+            wave.samples.size() > static_cast<std::size_t>(
+                std::numeric_limits<int>::max()))
         {
             releaseSimulator(instance);
             return false;
@@ -123,11 +139,12 @@ bool initialiseUnlocked(Instance &instance) {
         instance.simulator->synthesizer().initializeImpulseResponse(
             wave.samples.data(),
             static_cast<int>(wave.samples.size()),
-            response->getVolume(),
+            static_cast<float>(response->getVolume()),
             i);
     }
 
     instance.simulator->startAudioRenderingThread();
+    instance.ready = true;
     return true;
 }
 
@@ -268,15 +285,7 @@ ESRECORD_API std::int32_t ESRecord_GetSimState(const std::int32_t instanceId) {
     using namespace nextcar::recorder;
 
     Instance *instance = getInstance(instanceId);
-    if (instance == nullptr) {
-        return 0;
-    }
-
-    std::lock_guard<std::mutex> lock(instance->mutex);
-    return instance->simulator != nullptr &&
-        instance->engine != nullptr &&
-        instance->transmission != nullptr &&
-        instance->vehicle != nullptr;
+    return instance != nullptr && instance->ready.load() ? 1 : 0;
 }
 
 ESRECORD_API ESRecordState ESRecord_GetState(
@@ -291,9 +300,8 @@ ESRECORD_API ESRecordState ESRecord_GetState(
         return ESRECORD_STATE_IDLE;
     }
 
-    std::lock_guard<std::mutex> lock(instance->mutex);
-    progress = instance->progress;
-    return instance->state;
+    progress = instance->progress.load();
+    return instance->state.load();
 }
 
 ESRECORD_API std::int32_t ESRecord_GetVersion() {
