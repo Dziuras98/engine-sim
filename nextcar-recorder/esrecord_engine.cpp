@@ -10,7 +10,9 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <limits>
+#include <sstream>
 
 namespace nextcar::recorder {
 
@@ -23,6 +25,23 @@ Instance *getInstance(const std::int32_t instanceId) {
     }
 
     return &g_instances[static_cast<std::size_t>(instanceId)];
+}
+
+void writeInitialisationLog(
+    const std::int32_t instanceId,
+    const std::string &message)
+{
+    namespace fs = std::filesystem;
+
+    std::error_code error;
+    fs::create_directories("es", error);
+    std::ofstream log(
+        fs::path("es") /
+            ("initialise_error" + std::to_string(instanceId) + ".log"),
+        std::ios::out | std::ios::app);
+    if (log.is_open()) {
+        log << message << '\n';
+    }
 }
 
 void releaseSimulator(Instance &instance) {
@@ -77,19 +96,33 @@ void persistCompilerLog(const std::int32_t instanceId) {
     }
 }
 
-bool initialiseUnlocked(Instance &instance) {
+bool initialiseUnlocked(Instance &instance, const std::int32_t instanceId) {
+    namespace fs = std::filesystem;
+
+    const fs::path logPath = fs::path("es") /
+        ("initialise_error" + std::to_string(instanceId) + ".log");
+    std::error_code fileError;
+    fs::remove(logPath, fileError);
+    writeInitialisationLog(instanceId, "initialisation started");
+
     releaseSimulator(instance);
 
     if (instance.engine == nullptr ||
         instance.vehicle == nullptr ||
         instance.transmission == nullptr)
     {
+        std::ostringstream message;
+        message << "missing compiled object: engine=" << (instance.engine != nullptr)
+            << ", vehicle=" << (instance.vehicle != nullptr)
+            << ", transmission=" << (instance.transmission != nullptr);
+        writeInitialisationLog(instanceId, message.str());
         return false;
     }
 
     instance.simulator =
         instance.engine->createSimulator(instance.vehicle, instance.transmission);
     if (instance.simulator == nullptr) {
+        writeInitialisationLog(instanceId, "engine->createSimulator returned null");
         return false;
     }
 
@@ -97,10 +130,16 @@ bool initialiseUnlocked(Instance &instance) {
 
     const double simulationFrequency =
         instance.engine->getSimulationFrequency();
+    {
+        std::ostringstream message;
+        message << "simulation_frequency=" << simulationFrequency;
+        writeInitialisationLog(instanceId, message.str());
+    }
     if (!std::isfinite(simulationFrequency) ||
         simulationFrequency < 1.0 ||
         simulationFrequency > static_cast<double>(std::numeric_limits<int>::max()))
     {
+        writeInitialisationLog(instanceId, "invalid simulation frequency");
         releaseSimulator(instance);
         return false;
     }
@@ -119,19 +158,56 @@ bool initialiseUnlocked(Instance &instance) {
         static_cast<float>(instance.engine->getInitialHighFrequencyGain());
     instance.simulator->synthesizer().setAudioParameters(audioParameters);
 
+    {
+        std::ostringstream message;
+        message << "exhaust_system_count="
+            << instance.engine->getExhaustSystemCount();
+        writeInitialisationLog(instanceId, message.str());
+    }
+
     for (int i = 0; i < instance.engine->getExhaustSystemCount(); ++i) {
         ImpulseResponse *response =
             instance.engine->getExhaustSystem(i)->getImpulseResponse();
         if (response == nullptr) {
+            writeInitialisationLog(
+                instanceId,
+                "exhaust " + std::to_string(i) + " has no impulse response");
             continue;
         }
 
+        const std::string responsePath = response->getFilename();
+        {
+            std::ostringstream message;
+            message << "exhaust " << i
+                << " impulse_path=" << responsePath
+                << ", exists=" << fs::exists(responsePath, fileError)
+                << ", volume=" << response->getVolume();
+            writeInitialisationLog(instanceId, message.str());
+        }
+
         Pcm16Wave wave;
-        if (!readMonoPcm16Wave(response->getFilename(), wave) ||
-            wave.sampleRate != 44100 ||
+        if (!readMonoPcm16Wave(responsePath, wave)) {
+            writeInitialisationLog(
+                instanceId,
+                "impulse response rejected by mono PCM16 reader: " + responsePath);
+            releaseSimulator(instance);
+            return false;
+        }
+
+        {
+            std::ostringstream message;
+            message << "impulse decoded: sample_rate=" << wave.sampleRate
+                << ", samples=" << wave.samples.size();
+            writeInitialisationLog(instanceId, message.str());
+        }
+
+        if (wave.sampleRate != 44100 ||
             wave.samples.size() > static_cast<std::size_t>(
                 std::numeric_limits<int>::max()))
         {
+            writeInitialisationLog(
+                instanceId,
+                "impulse response has unsupported sample rate or sample count");
             releaseSimulator(instance);
             return false;
         }
@@ -145,6 +221,7 @@ bool initialiseUnlocked(Instance &instance) {
 
     instance.simulator->startAudioRenderingThread();
     instance.ready = true;
+    writeInitialisationLog(instanceId, "initialisation succeeded");
     return true;
 }
 
@@ -249,7 +326,7 @@ ESRECORD_API std::int32_t ESRecord_Compile(
     instance->transmission = transmission;
     instance->engineName = engine->getName();
 
-    const bool initialised = initialiseUnlocked(*instance);
+    const bool initialised = initialiseUnlocked(*instance, instanceId);
     instance->state = ESRECORD_STATE_IDLE;
     return initialised ? 1 : 0;
 }
@@ -263,7 +340,7 @@ ESRECORD_API std::int32_t ESRecord_Initialise(const std::int32_t instanceId) {
     }
 
     std::lock_guard<std::mutex> lock(instance->mutex);
-    return initialiseUnlocked(*instance) ? 1 : 0;
+    return initialiseUnlocked(*instance, instanceId) ? 1 : 0;
 }
 
 ESRECORD_API double ESRecord_Update(
