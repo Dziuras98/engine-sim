@@ -52,29 +52,29 @@ jobs:
           New-Item -ItemType Directory -Path ci-artifacts -Force | Out-Null
           $flex = (Get-Command win_flex.exe -ErrorAction Stop).Source
           $bison = (Get-Command win_bison.exe -ErrorAction Stop).Source
-          cmake -S nextcar-recorder -B build-nextcar-recorder -A x64 `
-            "-DFLEX_EXECUTABLE=$flex" `
-            "-DBISON_EXECUTABLE=$bison" 2>&1 |
-            Tee-Object -FilePath ci-artifacts/configure.log
+          $command = 'cmake -S nextcar-recorder -B build-nextcar-recorder -A x64 ' +
+            '"-DFLEX_EXECUTABLE=' + $flex + '" ' +
+            '"-DBISON_EXECUTABLE=' + $bison + '" ' +
+            '> ci-artifacts\configure.log 2>&1'
+          cmd.exe /d /s /c $command
           $configureExitCode = $LASTEXITCODE
+          Get-Content ci-artifacts/configure.log
           if ($configureExitCode -ne 0) { exit $configureExitCode }
 
       - name: Build recorder DLL and ABI test
         shell: powershell
         run: |
-          cmake --build build-nextcar-recorder --config Release `
-            --target esrecord-lib nextcar-recorder-abi-test 2>&1 |
-            Tee-Object -FilePath ci-artifacts/build.log
+          cmd.exe /d /s /c "cmake --build build-nextcar-recorder --config Release --target esrecord-lib nextcar-recorder-abi-test > ci-artifacts\build.log 2>&1"
           $buildExitCode = $LASTEXITCODE
+          Get-Content ci-artifacts/build.log
           if ($buildExitCode -ne 0) { exit $buildExitCode }
 
       - name: Run ABI layout test
         shell: powershell
         run: |
-          ctest --test-dir build-nextcar-recorder -C Release `
-            --output-on-failure -R nextcar-recorder-abi 2>&1 |
-            Tee-Object -FilePath ci-artifacts/ctest.log
+          cmd.exe /d /s /c "ctest --test-dir build-nextcar-recorder -C Release --output-on-failure -R nextcar-recorder-abi > ci-artifacts\ctest.log 2>&1"
           $testExitCode = $LASTEXITCODE
+          Get-Content ci-artifacts/ctest.log
           if ($testExitCode -ne 0) { exit $testExitCode }
 
       - name: Verify exported DLL exists
