@@ -103,15 +103,27 @@ set_target_properties(esrecord-lib PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON)
 
-add_executable(nextcar-recorder-abi-test
+add_executable(nextcar-recorder-abi-layout-test
     tests/abi_layout.cpp)
-
-target_include_directories(nextcar-recorder-abi-test
+target_include_directories(nextcar-recorder-abi-layout-test
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+set_target_properties(nextcar-recorder-abi-layout-test PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON)
 
-set_target_properties(nextcar-recorder-abi-test PROPERTIES
+add_executable(nextcar-recorder-abi-runtime-test
+    tests/abi_runtime.cpp)
+target_link_libraries(nextcar-recorder-abi-runtime-test PRIVATE esrecord-lib)
+target_include_directories(nextcar-recorder-abi-runtime-test
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+set_target_properties(nextcar-recorder-abi-runtime-test PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON)
 
 enable_testing()
-add_test(NAME nextcar-recorder-abi COMMAND nextcar-recorder-abi-test)
+add_test(
+    NAME nextcar-recorder-abi-layout
+    COMMAND nextcar-recorder-abi-layout-test)
+add_test(
+    NAME nextcar-recorder-abi-runtime
+    COMMAND nextcar-recorder-abi-runtime-test)
