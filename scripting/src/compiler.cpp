@@ -1,35 +1,5 @@
 #include "../include/compiler.h"
 
-#include <fstream>
-
-namespace {
-
-void appendCompilerTrace(const char *message) {
-    std::ofstream trace("es/compiler_trace.log", std::ios::out | std::ios::app);
-    if (trace.is_open()) {
-        trace << message << '\n';
-    }
-}
-
-void appendCompilerOutputTrace(
-    const char *stage,
-    const es_script::Compiler::Output &output,
-    const bool executeResult)
-{
-    std::ofstream trace("es/compiler_trace.log", std::ios::out | std::ios::app);
-    if (trace.is_open()) {
-        trace << stage
-            << ": execute_result=" << executeResult
-            << ", engine=" << static_cast<const void *>(output.engine)
-            << ", vehicle=" << static_cast<const void *>(output.vehicle)
-            << ", transmission=" << static_cast<const void *>(output.transmission)
-            << ", functions=" << output.functions.size()
-            << '\n';
-    }
-}
-
-} // namespace
-
 es_script::Compiler::Output *es_script::Compiler::s_output = nullptr;
 
 es_script::Compiler::Compiler() {
@@ -49,14 +19,10 @@ es_script::Compiler::Output *es_script::Compiler::output() {
 }
 
 void es_script::Compiler::initialize() {
-    appendCompilerTrace("initialize: begin");
-
-    // The recorder serializes compiler use, so clear the static output before
-    // constructing the next graph. Resetting it in execute() is too late: the
-    // graph has already been built and initialized and may retain bindings to
-    // this output state, matching the historical esrecorder branch contract.
+    // Compiler output is static in the frozen interpreter. Recorder compilation
+    // is serialized, so reset it before the next graph is built and initialized.
+    // Resetting in execute() would invalidate state already bound by that graph.
     *output() = Output{};
-    appendCompilerTrace("initialize: output reset");
 
     m_compiler = new piranha::Compiler(&m_rules);
     m_compiler->setFileExtension(".mr");
@@ -67,66 +33,47 @@ void es_script::Compiler::initialize() {
     m_compiler->addSearchPath("es/es/");
 
     m_rules.initialize();
-    appendCompilerTrace("initialize: complete");
 }
 
 bool es_script::Compiler::compile(const piranha::IrPath &path) {
-    appendCompilerTrace("compile: begin");
     bool successful = false;
 
     std::ofstream file("error_log.log", std::ios::out);
     piranha::IrCompilationUnit *unit = m_compiler->compile(path);
     if (unit == nullptr) {
         file << "Can't find file: " << path.toString() << "\n";
-        appendCompilerTrace("compile: unit not found");
     }
     else {
         const piranha::ErrorList *errors = m_compiler->getErrorList();
         if (errors->getErrorCount() == 0) {
-            appendCompilerTrace("compile: build program begin");
             unit->build(&m_program);
-            appendCompilerTrace("compile: program initialize begin");
             m_program.initialize();
-            appendCompilerTrace("compile: program initialize complete");
-
             successful = true;
         }
         else {
             for (int i = 0; i < errors->getErrorCount(); ++i) {
                 printError(errors->getCompilationError(i), file);
             }
-            appendCompilerTrace("compile: compiler errors recorded");
         }
     }
 
     file.close();
-    appendCompilerTrace(successful ? "compile: success" : "compile: failure");
-
     return successful;
 }
 
 es_script::Compiler::Output es_script::Compiler::execute() {
-    appendCompilerTrace("execute: begin");
-    Output *currentOutput = output();
-
     // Preserve the historical interpreter contract: action nodes may populate
-    // the output even when NodeProgram::execute() reports false for a void/root
-    // program. The output must remain intact after graph initialization.
-    const bool result = m_program.execute();
-    appendCompilerOutputTrace("execute: complete", *currentOutput, result);
-    return *currentOutput;
+    // the output even when the root program has no scalar return value.
+    m_program.execute();
+    return *output();
 }
 
 void es_script::Compiler::destroy() {
-    appendCompilerTrace("destroy: begin");
     m_program.free();
-    appendCompilerTrace("destroy: program free complete");
     m_compiler->free();
-    appendCompilerTrace("destroy: compiler free complete");
 
     delete m_compiler;
     m_compiler = nullptr;
-    appendCompilerTrace("destroy: complete");
 }
 
 void es_script::Compiler::printError(
