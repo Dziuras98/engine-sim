@@ -25,14 +25,13 @@ jobs:
       BOOST_PATH: ${{github.workspace}}/boost/
       
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
   
     - name: Checkout submodules
       run: git submodule update --init --recursive
     
-# Retrieve the cache, uses cache@v2
     - name: Cache boost
-      uses: actions/cache@v2
+      uses: actions/cache@v4
       id: cache-boost
       with:
         # Set the path to cache
