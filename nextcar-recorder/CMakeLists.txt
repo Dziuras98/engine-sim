@@ -33,18 +33,23 @@ add_subdirectory(
     "${ENGINE_SIM_ROOT}"
     "${CMAKE_BINARY_DIR}/engine-sim-source")
 
-# Piranha commit 432f0b122bb1663b686c553c7e7269300afac3bc uses the
-# removed Boost.Filesystem path::is_complete() API. Replace exactly its
-# path.cpp translation unit with a recorder-owned compatibility source that
-# changes only that call to is_absolute(). The external submodule remains
-# immutable and its remaining sources are compiled normally.
+# Piranha commit 432f0b122bb1663b686c553c7e7269300afac3bc requires two
+# recorder-owned compatibility overlays:
+# - path.cpp replaces removed Boost.Filesystem path::is_complete();
+# - node_program.cpp adds flush-before-evaluate diagnostics without changing
+#   the execution contract.
+# The external submodule remains immutable and all other sources compile normally.
 get_target_property(PIRANHA_SOURCES piranha SOURCES)
 set(PIRANHA_FILTERED_SOURCES)
 set(PIRANHA_PATH_SOURCE_COUNT 0)
+set(PIRANHA_NODE_PROGRAM_SOURCE_COUNT 0)
 foreach (PIRANHA_SOURCE IN LISTS PIRANHA_SOURCES)
     get_filename_component(PIRANHA_SOURCE_NAME "${PIRANHA_SOURCE}" NAME)
     if (PIRANHA_SOURCE_NAME STREQUAL "path.cpp")
         math(EXPR PIRANHA_PATH_SOURCE_COUNT "${PIRANHA_PATH_SOURCE_COUNT} + 1")
+    elseif (PIRANHA_SOURCE_NAME STREQUAL "node_program.cpp")
+        math(EXPR PIRANHA_NODE_PROGRAM_SOURCE_COUNT
+            "${PIRANHA_NODE_PROGRAM_SOURCE_COUNT} + 1")
     else ()
         list(APPEND PIRANHA_FILTERED_SOURCES "${PIRANHA_SOURCE}")
     endif ()
@@ -55,10 +60,16 @@ if (NOT PIRANHA_PATH_SOURCE_COUNT EQUAL 1)
         "Expected exactly one pinned piranha path.cpp source, observed "
         "${PIRANHA_PATH_SOURCE_COUNT}")
 endif ()
+if (NOT PIRANHA_NODE_PROGRAM_SOURCE_COUNT EQUAL 1)
+    message(FATAL_ERROR
+        "Expected exactly one pinned piranha node_program.cpp source, observed "
+        "${PIRANHA_NODE_PROGRAM_SOURCE_COUNT}")
+endif ()
 
 set_property(TARGET piranha PROPERTY SOURCES ${PIRANHA_FILTERED_SOURCES})
 target_sources(piranha PRIVATE
-    "${CMAKE_CURRENT_SOURCE_DIR}/compat/piranha_path_boost_compat.cpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/compat/piranha_path_boost_compat.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/compat/piranha_node_program_trace.cpp")
 target_include_directories(piranha PRIVATE
     "${ENGINE_SIM_ROOT}/dependencies/submodules/piranha/include")
 
