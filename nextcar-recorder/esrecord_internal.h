@@ -38,15 +38,9 @@ extern std::mutex g_compileMutex;
 Instance *getInstance(std::int32_t instanceId);
 void releaseSimulator(Instance &instance);
 void releaseCompiledObjects(Instance &instance);
-bool initialiseUnlocked(Instance &instance, std::int32_t instanceId);
-inline bool initialiseUnlocked(Instance &instance) {
-    const auto instanceId = static_cast<std::int32_t>(
-        &instance - g_instances.data());
-    return initialiseUnlocked(instance, instanceId);
-}
+bool initialiseUnlocked(Instance &instance);
 double updateUnlocked(Instance &instance, float averageFps);
 void persistCompilerLog(std::int32_t instanceId);
-void writeInitialisationLog(std::int32_t instanceId, const std::string &message);
 
 } // namespace nextcar::recorder
 
