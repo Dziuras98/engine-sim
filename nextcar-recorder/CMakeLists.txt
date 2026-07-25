@@ -63,8 +63,18 @@ add_library(esrecord-lib SHARED
     esrecord_internal.h
     esrecord_engine.cpp
     esrecord_record.cpp
+    esrecord_translation_unit.cpp
     wav_reader.h
     wav_reader.cpp)
+
+# esrecord_engine.cpp and esrecord_record.cpp are included by the single
+# translation unit. Treat them as auditable source inputs, not independent
+# compilation units, because frozen units.h/constants.h define externally
+# linked constexpr values in headers.
+set_source_files_properties(
+    esrecord_engine.cpp
+    esrecord_record.cpp
+    PROPERTIES HEADER_FILE_ONLY TRUE)
 
 target_link_libraries(esrecord-lib
     PRIVATE
