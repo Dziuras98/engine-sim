@@ -47,22 +47,22 @@ jobs:
       - name: Configure headless core
         shell: powershell
         run: |
+          New-Item -ItemType Directory -Path ci-core-artifacts -Force | Out-Null
           $flex = (Get-Command win_flex.exe -ErrorAction Stop).Source
           $bison = (Get-Command win_bison.exe -ErrorAction Stop).Source
           $toolchain = Join-Path $env:VCPKG_INSTALLATION_ROOT "scripts/buildsystems/vcpkg.cmake"
-          cmake -S nextcar-recorder -B build-core -A x64 `
-            "-DCMAKE_TOOLCHAIN_FILE=$toolchain" `
-            "-DVCPKG_TARGET_TRIPLET=x64-windows-static-md" `
-            "-DFLEX_EXECUTABLE=$flex" `
-            "-DBISON_EXECUTABLE=$bison"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmd.exe /d /s /c "cmake -S nextcar-recorder -B build-core -A x64 -DCMAKE_TOOLCHAIN_FILE=`"$toolchain`" -DVCPKG_TARGET_TRIPLET=x64-windows-static-md -DFLEX_EXECUTABLE=`"$flex`" -DBISON_EXECUTABLE=`"$bison`" > ci-core-artifacts\configure.log 2>&1"
+          $configureExitCode = $LASTEXITCODE
+          Get-Content ci-core-artifacts/configure.log
+          if ($configureExitCode -ne 0) { exit $configureExitCode }
 
       - name: Build core, scripting and tests
         shell: powershell
         run: |
-          cmake --build build-core --config Release `
-            --target engine-sim engine-sim-script-interpreter engine-sim-test
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmd.exe /d /s /c "cmake --build build-core --config Release --target engine-sim engine-sim-script-interpreter engine-sim-test > ci-core-artifacts\build.log 2>&1"
+          $buildExitCode = $LASTEXITCODE
+          Get-Content ci-core-artifacts/build.log
+          if ($buildExitCode -ne 0) { exit $buildExitCode }
 
       - name: Run engine-sim unit tests
         shell: powershell
@@ -72,5 +72,20 @@ jobs:
           if ($tests.Count -ne 1) {
             throw "Expected one engine-sim-test.exe, observed $($tests.Count)."
           }
-          & $tests[0].FullName
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $testLog = Join-Path (Resolve-Path ci-core-artifacts).Path `
+            "engine-sim-test.log"
+          $command = '"' + $tests[0].FullName + '" > "' + $testLog + '" 2>&1'
+          cmd.exe /d /s /c $command
+          $testExitCode = $LASTEXITCODE
+          Get-Content $testLog
+          if ($testExitCode -ne 0) { exit $testExitCode }
+
+      - name: Upload core test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-sim-core-diagnostics-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: ci-core-artifacts/**
