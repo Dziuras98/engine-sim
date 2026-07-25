@@ -46,5 +46,14 @@ int main() {
     if (ESRecord_Engine_GetRedline(-1) != -1.0f) return 13;
     if (ESRecord_Engine_GetDisplacement(-1) != -1.0f) return 14;
 
+    // Managed ESRecorder allocates/resets a slot before compiling an engine.
+    // An empty slot is valid but must not report a ready simulator yet.
+    if (ESRecord_Initialise(0) != 1) return 15;
+    if (ESRecord_GetSimState(0) != 0) return 16;
+
+    progress = -1;
+    if (ESRecord_GetState(0, progress) != ESRECORD_STATE_IDLE) return 17;
+    if (progress != 0) return 18;
+
     return 0;
 }
