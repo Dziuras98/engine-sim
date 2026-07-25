@@ -38,9 +38,10 @@ extern std::mutex g_compileMutex;
 Instance *getInstance(std::int32_t instanceId);
 void releaseSimulator(Instance &instance);
 void releaseCompiledObjects(Instance &instance);
-bool initialiseUnlocked(Instance &instance);
+bool initialiseUnlocked(Instance &instance, std::int32_t instanceId);
 double updateUnlocked(Instance &instance, float averageFps);
 void persistCompilerLog(std::int32_t instanceId);
+void writeInitialisationLog(std::int32_t instanceId, const std::string &message);
 
 } // namespace nextcar::recorder
 
