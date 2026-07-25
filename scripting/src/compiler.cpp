@@ -50,6 +50,14 @@ es_script::Compiler::Output *es_script::Compiler::output() {
 
 void es_script::Compiler::initialize() {
     appendCompilerTrace("initialize: begin");
+
+    // The recorder serializes compiler use, so clear the static output before
+    // constructing the next graph. Resetting it in execute() is too late: the
+    // graph has already been built and initialized and may retain bindings to
+    // this output state, matching the historical esrecorder branch contract.
+    *output() = Output{};
+    appendCompilerTrace("initialize: output reset");
+
     m_compiler = new piranha::Compiler(&m_rules);
     m_compiler->setFileExtension(".mr");
 
@@ -100,13 +108,10 @@ bool es_script::Compiler::compile(const piranha::IrPath &path) {
 es_script::Compiler::Output es_script::Compiler::execute() {
     appendCompilerTrace("execute: begin");
     Output *currentOutput = output();
-    *currentOutput = Output{};
-    appendCompilerTrace("execute: output reset");
 
     // Preserve the historical interpreter contract: action nodes may populate
     // the output even when NodeProgram::execute() reports false for a void/root
-    // program. Returning an empty object here discards valid side effects from
-    // set_engine, set_vehicle and set_transmission.
+    // program. The output must remain intact after graph initialization.
     const bool result = m_program.execute();
     appendCompilerOutputTrace("execute: complete", *currentOutput, result);
     return *currentOutput;
