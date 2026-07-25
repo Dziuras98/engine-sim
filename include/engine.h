@@ -108,6 +108,7 @@ class Engine : public Part {
         double getInitialNoise() const { return m_initialNoise; }
         double getInitialJitter() const { return m_initialJitter; }
         double getInitialConvolution() const { return m_initialConvolution; }
+        void setInitialConvolution(double value) { m_initialConvolution = value; }
 
         virtual Simulator *createSimulator(Vehicle *vehicle, Transmission *transmission);
 
@@ -137,7 +138,7 @@ class Engine : public Part {
         double m_initialHighFrequencyGain;
         double m_initialNoise;
         double m_initialJitter;
-        double m_initialConvolution;
+        double m_initialConvolution = 1.0;
 
         ExhaustSystem *m_exhaustSystems;
         int m_exhaustSystemCount;
