@@ -190,6 +190,19 @@ jobs:
           Get-Content $log
           if ($fixtureExitCode -ne 0) { exit $fixtureExitCode }
 
+      - name: Capture native runtime logs
+        if: always()
+        shell: powershell
+        run: |
+          $nativeLogs = @(Get-ChildItem fixture/runner/es -File `
+            -Filter "*.log" -ErrorAction SilentlyContinue)
+          foreach ($nativeLog in $nativeLogs) {
+            Copy-Item $nativeLog.FullName `
+              (Join-Path ci-artifacts $nativeLog.Name) -Force
+            Write-Host "Captured $($nativeLog.FullName)"
+            Get-Content $nativeLog.FullName
+          }
+
       - name: Validate recording fixture artifacts
         shell: powershell
         run: |
