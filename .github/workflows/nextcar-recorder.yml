@@ -8,6 +8,7 @@ on:
       - "CMakeLists.txt"
       - "include/engine.h"
       - "include/ignition_module.h"
+      - "dependencies/submodules/CMakeLists.txt"
       - "scripting/include/engine_node.h"
       - "scripting/src/compiler.cpp"
       - "nextcar-recorder/**"
@@ -42,12 +43,23 @@ jobs:
         with:
           arch: x64
 
+      - name: Install Boost
+        id: install-boost
+        uses: MarkusJx/install-boost@v2.3.0
+        with:
+          boost_version: 1.78.0
+          boost_install_dir: ${{ runner.temp }}/boost
+          platform_version: 2022
+          toolset: msvc
+
       - name: Install Flex and Bison
         shell: powershell
         run: choco install winflexbison3 --yes --no-progress
 
       - name: Configure recorder source build
         shell: powershell
+        env:
+          BOOST_ROOT: ${{ steps.install-boost.outputs.BOOST_ROOT }}
         run: |
           New-Item -ItemType Directory -Path ci-artifacts -Force | Out-Null
           $flex = (Get-Command win_flex.exe -ErrorAction Stop).Source
@@ -55,6 +67,7 @@ jobs:
           $command = 'cmake -S nextcar-recorder -B build-nextcar-recorder -A x64 ' +
             '"-DFLEX_EXECUTABLE=' + $flex + '" ' +
             '"-DBISON_EXECUTABLE=' + $bison + '" ' +
+            '"-DBOOST_ROOT=' + $env:BOOST_ROOT + '" ' +
             '> ci-artifacts\configure.log 2>&1'
           cmd.exe /d /s /c $command
           $configureExitCode = $LASTEXITCODE
