@@ -60,13 +60,15 @@ bool es_script::Compiler::compile(const piranha::IrPath &path) {
 }
 
 es_script::Compiler::Output es_script::Compiler::execute() {
-    const bool result = m_program.execute();
+    Output *currentOutput = output();
+    *currentOutput = Output{};
 
+    const bool result = m_program.execute();
     if (!result) {
-        // Todo: Runtime error
+        return Output{};
     }
 
-    return *output();
+    return *currentOutput;
 }
 
 void es_script::Compiler::destroy() {
