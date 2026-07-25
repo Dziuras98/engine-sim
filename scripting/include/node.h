@@ -7,7 +7,6 @@
 #include <string>
 
 namespace es_script {
-
     class Node : public piranha::Node {
     protected:
         struct InputTarget {
@@ -19,6 +18,7 @@ namespace es_script {
             piranha::pNodeInput *input = nullptr;
             void *memoryTarget = nullptr;
             Type type = Type::Atomic;
+            bool optional = false;
         };
 
     public:
@@ -42,10 +42,17 @@ namespace es_script {
 
         void readAllInputs() {
             for (auto i : m_inputMap) {
-                if (i.second.type == InputTarget::Type::Atomic
-                    || i.second.type == InputTarget::Type::Object)
+                const InputTarget &target = i.second;
+                const piranha::pNodeInput input = *target.input;
+                if (input == nullptr && target.optional) {
+                    // Preserve the value already stored in memoryTarget.
+                    continue;
+                }
+
+                if (target.type == InputTarget::Type::Atomic
+                    || target.type == InputTarget::Type::Object)
                 {
-                    (*m_inputMap[i.first].input)->fullCompute(i.second.memoryTarget);
+                    input->fullCompute(target.memoryTarget);
                 }
             }
         }
@@ -58,7 +65,21 @@ namespace es_script {
             m_inputMap[name] = {
                 new piranha::pNodeInput,
                 target,
-                type
+                type,
+                false
+            };
+        }
+
+        void addOptionalInput(
+            const std::string &name,
+            void *target,
+            InputTarget::Type type = InputTarget::Type::Atomic)
+        {
+            m_inputMap[name] = {
+                new piranha::pNodeInput,
+                target,
+                type,
+                true
             };
         }
 
