@@ -56,11 +56,11 @@ jobs:
         with:
           arch: x64
 
-      - name: Install Boost.Filesystem
+      - name: Install static Boost.Filesystem
         shell: powershell
         run: |
           $vcpkg = Join-Path $env:VCPKG_INSTALLATION_ROOT "vcpkg.exe"
-          & $vcpkg install boost-filesystem:x64-windows
+          & $vcpkg install boost-filesystem:x64-windows-static-md
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install Flex and Bison
@@ -75,7 +75,7 @@ jobs:
           $toolchain = Join-Path $env:VCPKG_INSTALLATION_ROOT "scripts/buildsystems/vcpkg.cmake"
           $command = 'cmake -S nextcar-recorder -B build-nextcar-recorder -A x64 ' +
             '"-DCMAKE_TOOLCHAIN_FILE=' + $toolchain + '" ' +
-            '"-DVCPKG_TARGET_TRIPLET=x64-windows" ' +
+            '"-DVCPKG_TARGET_TRIPLET=x64-windows-static-md" ' +
             '"-DFLEX_EXECUTABLE=' + $flex + '" ' +
             '"-DBISON_EXECUTABLE=' + $bison + '" ' +
             '> ci-artifacts\configure.log 2>&1'
@@ -100,7 +100,7 @@ jobs:
           Get-Content ci-artifacts/ctest.log
           if ($testExitCode -ne 0) { exit $testExitCode }
 
-      - name: Verify exported DLL exists
+      - name: Verify DLL exports and dependencies
         shell: powershell
         run: |
           $dlls = @(Get-ChildItem build-nextcar-recorder -Recurse `
@@ -108,8 +108,38 @@ jobs:
           if ($dlls.Count -ne 1) {
             throw "Expected exactly one esrecord-lib.dll, observed $($dlls.Count)."
           }
-          $dlls[0] | Format-List FullName, Length, LastWriteTimeUtc |
+          $dll = $dlls[0]
+          $dll | Format-List FullName, Length, LastWriteTimeUtc |
             Tee-Object -FilePath ci-artifacts/outputs.txt
+
+          $dependents = (& dumpbin.exe /dependents $dll.FullName | Out-String)
+          $dependents | Set-Content ci-artifacts/dependents.txt -Encoding utf8
+          if ($dependents -match '(?i)boost_[^\s]*\.dll') {
+            throw "Recorder DLL has an external Boost runtime dependency."
+          }
+
+          $exports = (& dumpbin.exe /exports $dll.FullName | Out-String)
+          $exports | Set-Content ci-artifacts/exports.txt -Encoding utf8
+          $requiredExports = @(
+            'ESRecord_Compile',
+            'ESRecord_Initialise',
+            'ESRecord_Update',
+            'ESRecord_Record',
+            'ESRecord_GetSimState',
+            'ESRecord_GetState',
+            'ESRecord_GetVersion',
+            'ESRecord_GetMaxInstances',
+            'ESRecord_GetEngineSimSourceRevision',
+            'ESRecord_GetCompatibilityTarget',
+            'ESRecord_Engine_GetName',
+            'ESRecord_Engine_GetRedline',
+            'ESRecord_Engine_GetDisplacement'
+          )
+          foreach ($requiredExport in $requiredExports) {
+            if ($exports -notmatch [regex]::Escape($requiredExport)) {
+              throw "Recorder DLL is missing export $requiredExport."
+            }
+          }
 
       - name: Upload source-built recorder
         uses: actions/upload-artifact@v4
