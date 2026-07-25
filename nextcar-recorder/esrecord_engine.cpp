@@ -1,11 +1,10 @@
 #include "esrecord_internal.h"
+#include "wav_reader.h"
 
 #include "../include/impulse_response.h"
 #include "../include/synthesizer.h"
 #include "../include/units.h"
 #include "../scripting/include/compiler.h"
-
-#include <delta-studio/include/yds_core.h>
 
 #include <algorithm>
 #include <chrono>
@@ -113,19 +112,19 @@ bool initialiseUnlocked(Instance &instance) {
             continue;
         }
 
-        ysWindowsAudioWaveFile waveFile;
-        waveFile.OpenFile(response->getFilename().c_str());
-        waveFile.InitializeInternalBuffer(waveFile.GetSampleCount());
-        waveFile.FillBuffer(0);
-        waveFile.CloseFile();
+        Pcm16Wave wave;
+        if (!readMonoPcm16Wave(response->getFilename(), wave) ||
+            wave.sampleRate != 44100)
+        {
+            releaseSimulator(instance);
+            return false;
+        }
 
         instance.simulator->synthesizer().initializeImpulseResponse(
-            reinterpret_cast<const std::int16_t *>(waveFile.GetBuffer()),
-            waveFile.GetSampleCount(),
+            wave.samples.data(),
+            static_cast<int>(wave.samples.size()),
             response->getVolume(),
             i);
-
-        waveFile.DestroyInternalBuffer();
     }
 
     instance.simulator->startAudioRenderingThread();
