@@ -27,9 +27,9 @@ concurrency:
 
 jobs:
   windows-source-build:
-    name: Windows x64 source DLL and ABI
+    name: Windows x64 source DLL and recording fixture
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 50
 
     steps:
       - name: Check out engine-sim and recursive dependencies
@@ -37,6 +37,14 @@ jobs:
         with:
           clean: true
           submodules: recursive
+
+      - name: Check out pinned ESRecorder headless fixture
+        uses: actions/checkout@v4
+        with:
+          repository: Dziuras98/ESRecorder-nextcar
+          ref: 5180102b5f0540db5d777d85853180879af41934
+          path: fixture/esrecorder
+          clean: true
 
       - name: Capture dependency source identity
         shell: powershell
@@ -50,11 +58,18 @@ jobs:
             ci-artifacts/piranha-path.h
           git -C dependencies/submodules/piranha rev-parse HEAD |
             Out-File -FilePath ci-artifacts/piranha-commit.txt -Encoding ascii
+          git -C fixture/esrecorder rev-parse HEAD |
+            Out-File -FilePath ci-artifacts/esrecorder-commit.txt -Encoding ascii
 
       - name: Configure MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
 
       - name: Install static Boost.Filesystem
         shell: powershell
@@ -140,6 +155,88 @@ jobs:
               throw "Recorder DLL is missing export $requiredExport."
             }
           }
+
+      - name: Build pinned managed headless host
+        shell: powershell
+        run: |
+          dotnet build `
+            fixture/esrecorder/src/ESRecorder.Cli/ESRecorder.Cli.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --output fixture/runner
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $nativeDll = @(Get-ChildItem build-nextcar-recorder -Recurse `
+            -Filter esrecord-lib.dll -File)
+          if ($nativeDll.Count -ne 1) {
+            throw "Source-built recorder DLL could not be resolved."
+          }
+          Copy-Item $nativeDll[0].FullName `
+            fixture/runner/es/esrecord-lib.dll -Force
+
+      - name: Compile MR and record one-second WAV
+        shell: powershell
+        run: |
+          $runner = (Resolve-Path fixture/runner).Path
+          $log = (Join-Path (Resolve-Path ci-artifacts).Path "recording-fixture.log")
+          Push-Location $runner
+          try {
+            cmd.exe /d /s /c "ESRecorder.Cli.exe record --engine-script es/assets/main.mr --output recordings/smoke --name source-port-smoke --rpm 2000:10000 --throttle 50 --length 1 --warmup 60 --instances 1 > `"$log`" 2>&1"
+            $fixtureExitCode = $LASTEXITCODE
+          }
+          finally {
+            Pop-Location
+          }
+          Get-Content $log
+          if ($fixtureExitCode -ne 0) { exit $fixtureExitCode }
+
+      - name: Validate recording fixture artifacts
+        shell: powershell
+        run: |
+          $recording = "fixture/runner/recordings/smoke"
+          $manifestPath = Join-Path $recording "recording-manifest.json"
+          $csvPath = Join-Path $recording "dyno.csv"
+          $wavePath = Join-Path $recording "source-port-smoke_2000_50.wav"
+          foreach ($path in @($manifestPath, $csvPath, $wavePath)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Recording fixture is missing $path."
+            }
+          }
+
+          $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+          if ($manifest.engine.nativeLibraryVersion -ne 2000) {
+            throw "Manifest did not record native ABI 2000."
+          }
+          if ([string]::IsNullOrWhiteSpace($manifest.engine.name)) {
+            throw "Manifest engine name is empty."
+          }
+          if (@($manifest.measurements).Count -ne 1) {
+            throw "Expected one recorded measurement."
+          }
+
+          $csvLines = @(Get-Content $csvPath)
+          if ($csvLines.Count -ne 2) {
+            throw "Expected CSV header plus one measurement."
+          }
+
+          $wave = [System.IO.File]::ReadAllBytes($wavePath)
+          if ($wave.Length -le 88244) {
+            throw "Recorded WAV is too short or has no metadata chunk."
+          }
+          if ([Text.Encoding]::ASCII.GetString($wave, 0, 4) -ne 'RIFF' -or
+              [Text.Encoding]::ASCII.GetString($wave, 8, 4) -ne 'WAVE' -or
+              [Text.Encoding]::ASCII.GetString($wave, 36, 4) -ne 'data') {
+            throw "Recorded file has an invalid RIFF/WAVE header."
+          }
+          if ([BitConverter]::ToInt32($wave, 24) -ne 44100 -or
+              [BitConverter]::ToInt16($wave, 34) -ne 16 -or
+              [BitConverter]::ToInt32($wave, 40) -ne 88200) {
+            throw "Recorded WAV does not match one-second mono PCM16 at 44.1 kHz."
+          }
+
+          Copy-Item $recording ci-artifacts/recording-smoke -Recurse -Force
+          "PASS: real MR compile and WAV recording fixture" |
+            Set-Content ci-artifacts/recording-fixture-result.txt -Encoding ascii
 
       - name: Upload source-built recorder
         uses: actions/upload-artifact@v4
