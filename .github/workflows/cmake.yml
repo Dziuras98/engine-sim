@@ -33,11 +33,11 @@ jobs:
         with:
           arch: x64
 
-      - name: Install Boost.Filesystem
+      - name: Install static Boost.Filesystem
         shell: powershell
         run: |
           $vcpkg = Join-Path $env:VCPKG_INSTALLATION_ROOT "vcpkg.exe"
-          & $vcpkg install boost-filesystem:x64-windows
+          & $vcpkg install boost-filesystem:x64-windows-static-md
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install Flex and Bison
@@ -52,7 +52,7 @@ jobs:
           $toolchain = Join-Path $env:VCPKG_INSTALLATION_ROOT "scripts/buildsystems/vcpkg.cmake"
           cmake -S nextcar-recorder -B build-core -A x64 `
             "-DCMAKE_TOOLCHAIN_FILE=$toolchain" `
-            "-DVCPKG_TARGET_TRIPLET=x64-windows" `
+            "-DVCPKG_TARGET_TRIPLET=x64-windows-static-md" `
             "-DFLEX_EXECUTABLE=$flex" `
             "-DBISON_EXECUTABLE=$bison"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
