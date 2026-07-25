@@ -6,6 +6,10 @@ if (NOT WIN32)
     message(FATAL_ERROR "The nEXTcAR recorder DLL currently supports Windows x64 only")
 endif ()
 
+option(ESRECORD_ENABLE_ASAN
+    "Instrument the native recorder and scripting stack with MSVC AddressSanitizer"
+    OFF)
+
 # The frozen engine-sim dependency graph contains legacy projects whose policy
 # declarations predate CMake 3.5. CMake 4 requires an explicit compatibility
 # floor before those projects are configured.
@@ -119,6 +123,26 @@ target_include_directories(nextcar-recorder-abi-runtime-test
 set_target_properties(nextcar-recorder-abi-runtime-test PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON)
+
+if (MSVC AND ESRECORD_ENABLE_ASAN)
+    foreach (ESRECORD_ASAN_TARGET IN ITEMS
+        piranha
+        engine-sim
+        engine-sim-script-interpreter
+        esrecord-lib
+        nextcar-recorder-abi-runtime-test)
+        target_compile_options(${ESRECORD_ASAN_TARGET} PRIVATE
+            /fsanitize=address
+            /Zi)
+    endforeach ()
+
+    target_link_options(esrecord-lib PRIVATE
+        /fsanitize=address
+        /DEBUG)
+    target_link_options(nextcar-recorder-abi-runtime-test PRIVATE
+        /fsanitize=address
+        /DEBUG)
+endif ()
 
 enable_testing()
 add_test(
