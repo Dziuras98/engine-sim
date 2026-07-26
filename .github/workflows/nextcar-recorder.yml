@@ -10,6 +10,7 @@ on:
       - "include/ignition_module.h"
       - "dependencies/submodules/CMakeLists.txt"
       - "scripting/include/engine_node.h"
+      - "scripting/include/node.h"
       - "scripting/src/compiler.cpp"
       - "nextcar-recorder/**"
       - ".github/workflows/nextcar-recorder.yml"
@@ -199,7 +200,7 @@ jobs:
           (& dumpbin.exe /exports $referenceDll | Out-String) |
             Set-Content ci-artifacts/reference-exports.txt -Encoding utf8
 
-      - name: Compile MR and record source-built one-second WAV
+      - name: Compile legacy MR and record source-built one-second WAV
         shell: powershell
         run: |
           $runner = (Resolve-Path fixture/runner-source).Path
@@ -215,16 +216,43 @@ jobs:
           Get-Content $log
           if ($fixtureExitCode -ne 0) { exit $fixtureExitCode }
 
-      - name: Compile MR and record pinned reference one-second WAV
+      - name: Prepare byte-identical explicit-convolution parity hosts
+        shell: powershell
+        run: |
+          & nextcar-recorder/tests/prepare_parity_hosts.ps1 `
+            -ReferenceSource fixture/runner-reference `
+            -SourceBuiltSource fixture/runner-source `
+            -ReferenceDestination fixture/runner-parity-reference `
+            -SourceBuiltDestination fixture/runner-parity-source `
+            -EvidencePath ci-artifacts/parity-script-identity.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Record source-built explicit-convolution parity WAV
+        shell: powershell
+        run: |
+          $runner = (Resolve-Path fixture/runner-parity-source).Path
+          $log = (Join-Path (Resolve-Path ci-artifacts).Path "source-parity-recording.log")
+          Push-Location $runner
+          try {
+            cmd.exe /d /s /c "ESRecorder.Cli.exe record --engine-script es/assets/main.mr --output recordings/parity-source --name source-parity --rpm 2000:10000 --throttle 50 --length 1 --warmup 60 --instances 1 > `"$log`" 2>&1"
+            $fixtureExitCode = $LASTEXITCODE
+          }
+          finally {
+            Pop-Location
+          }
+          Get-Content $log
+          if ($fixtureExitCode -ne 0) { exit $fixtureExitCode }
+
+      - name: Record pinned reference explicit-convolution parity WAV
         id: reference_recording
         continue-on-error: true
         shell: powershell
         run: |
-          $runner = (Resolve-Path fixture/runner-reference).Path
-          $log = (Join-Path (Resolve-Path ci-artifacts).Path "reference-recording-fixture.log")
+          $runner = (Resolve-Path fixture/runner-parity-reference).Path
+          $log = (Join-Path (Resolve-Path ci-artifacts).Path "reference-parity-recording.log")
           Push-Location $runner
           try {
-            cmd.exe /d /s /c "ESRecorder.Cli.exe record --engine-script es/assets/main.mr --output recordings/reference --name reference-smoke --rpm 2000:10000 --throttle 50 --length 1 --warmup 60 --instances 1 > `"$log`" 2>&1"
+            cmd.exe /d /s /c "ESRecorder.Cli.exe record --engine-script es/assets/main.mr --output recordings/parity-reference --name reference-parity --rpm 2000:10000 --throttle 50 --length 1 --warmup 60 --instances 1 > `"$log`" 2>&1"
             $fixtureExitCode = $LASTEXITCODE
           }
           finally {
@@ -238,8 +266,9 @@ jobs:
         shell: powershell
         run: |
           $hosts = @(
-            @{ Prefix = "source"; Path = "fixture/runner-source/es" },
-            @{ Prefix = "reference"; Path = "fixture/runner-reference/es" }
+            @{ Prefix = "source-smoke"; Path = "fixture/runner-source/es" },
+            @{ Prefix = "source-parity"; Path = "fixture/runner-parity-source/es" },
+            @{ Prefix = "reference-parity"; Path = "fixture/runner-parity-reference/es" }
           )
           foreach ($hostInfo in $hosts) {
             $nativeLogs = @(Get-ChildItem $hostInfo.Path -File `
@@ -297,8 +326,8 @@ jobs:
             throw "Recorded WAV does not match one-second mono PCM16 at 44.1 kHz."
           }
 
-          Copy-Item $recording ci-artifacts/recording-source -Recurse -Force
-          "PASS: real MR compile and source-built WAV recording fixture" |
+          Copy-Item $recording ci-artifacts/recording-source-smoke -Recurse -Force
+          "PASS: legacy MR compiled and recorded through source-built ABI 2000" |
             Set-Content ci-artifacts/recording-fixture-result.txt -Encoding ascii
 
       - name: Produce black-box reference parity report
@@ -307,15 +336,20 @@ jobs:
         env:
           REFERENCE_STEP_OUTCOME: ${{ steps.reference_recording.outcome }}
         run: |
-          $referenceRecording = "fixture/runner-reference/recordings/reference"
-          $sourceRecording = "fixture/runner-source/recordings/source"
+          $referenceRecording = "fixture/runner-parity-reference/recordings/parity-reference"
+          $sourceRecording = "fixture/runner-parity-source/recordings/parity-source"
           $referenceManifest = Join-Path $referenceRecording "recording-manifest.json"
           $sourceManifest = Join-Path $sourceRecording "recording-manifest.json"
-          $referenceWave = Join-Path $referenceRecording "reference-smoke_2000_50.wav"
-          $sourceWave = Join-Path $sourceRecording "source-port-smoke_2000_50.wav"
+          $referenceWave = Join-Path $referenceRecording "reference-parity_2000_50.wav"
+          $sourceWave = Join-Path $sourceRecording "source-parity_2000_50.wav"
 
           if (Test-Path -LiteralPath $referenceRecording -PathType Container) {
-            Copy-Item $referenceRecording ci-artifacts/recording-reference -Recurse -Force
+            Copy-Item $referenceRecording `
+              ci-artifacts/recording-parity-reference -Recurse -Force
+          }
+          if (Test-Path -LiteralPath $sourceRecording -PathType Container) {
+            Copy-Item $sourceRecording `
+              ci-artifacts/recording-parity-source -Recurse -Force
           }
 
           $required = @($referenceManifest, $sourceManifest, $referenceWave, $sourceWave)
@@ -333,6 +367,15 @@ jobs:
             exit 0
           }
 
+          $reference = Get-Content $referenceManifest -Raw | ConvertFrom-Json
+          $source = Get-Content $sourceManifest -Raw | ConvertFrom-Json
+          if ($reference.engine.nativeLibraryVersion -ne 1010) {
+            throw "Reference parity host did not use pinned ABI 1010."
+          }
+          if ($source.engine.nativeLibraryVersion -ne 2000) {
+            throw "Source parity host did not use source-built ABI 2000."
+          }
+
           python nextcar-recorder/tests/compare_recordings.py `
             --reference-manifest $referenceManifest `
             --source-manifest $sourceManifest `
@@ -344,6 +387,7 @@ jobs:
 
           @(
             "PASS: pinned ABI 1010 and source-built ABI 2000 outputs were compared.",
+            "Both hosts used the same explicit-convolution engine-script bytes.",
             "No acoustic or telemetry parity thresholds are enforced in this exploratory gate."
           ) | Set-Content ci-artifacts/parity-status.txt -Encoding utf8
 
