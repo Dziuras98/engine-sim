@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <string>
@@ -15,6 +16,7 @@ namespace {
 
 constexpr std::int32_t kOutputSampleRate = 44100;
 constexpr std::size_t kAudioBufferSize = 2048;
+constexpr std::int32_t kWaveHeaderSize = 44;
 
 std::string readOutputPath(const SampleConfig &config) {
     std::size_t length = 0;
@@ -27,6 +29,46 @@ std::string readOutputPath(const SampleConfig &config) {
     }
 
     return std::string(config.output, length);
+}
+
+std::string trackName(const SampleConfig &config) {
+    return std::to_string(config.rpm) + "RPM / " +
+        std::to_string(config.throttle) + "%";
+}
+
+std::string authorName() {
+    return "nEXTcAR ESRecord ABI 2 / engine-sim source "
+        ES_ENGINE_SIM_SOURCE_REVISION;
+}
+
+std::int64_t infoFieldSize(const std::string &value) {
+    if (value.size() >= static_cast<std::size_t>(
+            std::numeric_limits<std::int32_t>::max()))
+    {
+        return std::numeric_limits<std::int64_t>::max();
+    }
+
+    const std::int64_t valueLength =
+        static_cast<std::int64_t>(value.size()) + 1;
+    return 8 + valueLength + ((valueLength & 1) != 0 ? 1 : 0);
+}
+
+std::int64_t infoChunkSize(
+    const std::string &engineName,
+    const SampleConfig &config)
+{
+    const std::int64_t trackSize = infoFieldSize(trackName(config));
+    const std::int64_t authorSize = infoFieldSize(authorName());
+    const std::int64_t engineSize = infoFieldSize(engineName);
+    if (trackSize == std::numeric_limits<std::int64_t>::max() ||
+        authorSize == std::numeric_limits<std::int64_t>::max() ||
+        engineSize == std::numeric_limits<std::int64_t>::max())
+    {
+        return std::numeric_limits<std::int64_t>::max();
+    }
+
+    // LIST id + chunk size + INFO type + three INFO fields.
+    return 12 + trackSize + authorSize + engineSize;
 }
 
 template <typename T>
@@ -77,12 +119,8 @@ void appendInfoChunk(
     const std::string &engineName,
     const SampleConfig &config)
 {
-    const std::string trackName =
-        std::to_string(config.rpm) + "RPM / " +
-        std::to_string(config.throttle) + "%";
-    const std::string author =
-        "nEXTcAR ESRecord ABI 2 / engine-sim source "
-        ES_ENGINE_SIM_SOURCE_REVISION;
+    const std::string track = trackName(config);
+    const std::string author = authorName();
 
     stream.write("LIST", 4);
     fileSize += 4;
@@ -117,7 +155,7 @@ void appendInfoChunk(
         }
     };
 
-    writeInfoField("INAM", trackName);
+    writeInfoField("INAM", track);
     writeInfoField("IART", author);
     writeInfoField("IPRD", engineName);
 
@@ -144,7 +182,9 @@ ESRECORD_API SampleResult ESRecord_Record(
         config.throttle < 0 || config.throttle > 100 ||
         config.frequency <= 0 ||
         config.length <= 0 ||
-        config.prerunCount < 0)
+        config.prerunCount < 0 ||
+        (config.overrideRevlimit != 0 &&
+            config.rpm > std::numeric_limits<std::int32_t>::max() - 1000))
     {
         return result;
     }
@@ -156,11 +196,23 @@ ESRECORD_API SampleResult ESRecord_Record(
     {
         return result;
     }
+    const std::int64_t targetDataBytes64 =
+        targetSamples64 * static_cast<std::int64_t>(sizeof(std::int16_t));
 
     std::lock_guard<std::mutex> lock(instance->mutex);
     if (instance->engine == nullptr ||
         instance->vehicle == nullptr ||
         instance->transmission == nullptr)
+    {
+        return result;
+    }
+
+    const std::string engineName = instance->engine->getName();
+    const std::int64_t metadataBytes64 = infoChunkSize(engineName, config);
+    const std::int64_t maximumFileSize =
+        std::numeric_limits<std::int32_t>::max();
+    if (metadataBytes64 == std::numeric_limits<std::int64_t>::max() ||
+        targetDataBytes64 > maximumFileSize - kWaveHeaderSize - metadataBytes64)
     {
         return result;
     }
@@ -174,14 +226,22 @@ ESRECORD_API SampleResult ESRecord_Record(
         return result;
     }
 
+    const auto failRecording = [&]() {
+        instance->state = ESRECORD_STATE_IDLE;
+        instance->progress = 0;
+        output.close();
+        std::error_code error;
+        std::filesystem::remove(outputPath, error);
+        return SampleResult{};
+    };
+
     writeWaveHeader(output);
-    std::int32_t fileSize = 44;
+    std::int32_t fileSize = kWaveHeaderSize;
     std::int32_t dataSize = 0;
 
     const auto started = std::chrono::steady_clock::now();
     if (!initialiseUnlocked(*instance)) {
-        instance->state = ESRECORD_STATE_IDLE;
-        return result;
+        return failRecording();
     }
 
     const float throttleValue = config.throttle / 100.0f;
@@ -262,10 +322,12 @@ ESRECORD_API SampleResult ESRecord_Record(
             static_cast<unsigned int>(buffer.size()), buffer.data());
         if (available <= 0) {
             if (++framesWithoutAudio > 6000) {
-                instance->state = ESRECORD_STATE_IDLE;
-                return SampleResult{};
+                return failRecording();
             }
             continue;
+        }
+        if (available > static_cast<int>(buffer.size())) {
+            return failRecording();
         }
         framesWithoutAudio = 0;
 
@@ -278,8 +340,7 @@ ESRECORD_API SampleResult ESRecord_Record(
         output.write(
             reinterpret_cast<const char *>(buffer.data()), bytesToWrite);
         if (!output.good()) {
-            instance->state = ESRECORD_STATE_IDLE;
-            return SampleResult{};
+            return failRecording();
         }
 
         samplesRecorded += samplesToWrite;
@@ -289,9 +350,12 @@ ESRECORD_API SampleResult ESRecord_Record(
             static_cast<double>(samplesRecorded) / targetSamples * 100.0);
     }
 
-    appendInfoChunk(output, fileSize, instance->engine->getName(), config);
+    appendInfoChunk(output, fileSize, engineName, config);
     finaliseWaveHeader(output, fileSize, dataSize);
     output.flush();
+    if (!output.good()) {
+        return failRecording();
+    }
     output.close();
 
     const auto finished = std::chrono::steady_clock::now();
