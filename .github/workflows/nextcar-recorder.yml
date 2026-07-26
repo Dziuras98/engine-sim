@@ -28,9 +28,9 @@ concurrency:
 
 jobs:
   windows-source-build:
-    name: Windows x64 source DLL and recording fixture
+    name: Windows x64 source DLL and statistical parity
     runs-on: windows-latest
-    timeout-minutes: 65
+    timeout-minutes: 70
 
     steps:
       - name: Check out engine-sim and recursive dependencies
@@ -214,7 +214,7 @@ jobs:
         shell: powershell
         run: |
           $runner = (Resolve-Path fixture/runner-source).Path
-          $log = (Join-Path (Resolve-Path ci-artifacts).Path "source-recording-fixture.log")
+          $log = Join-Path (Resolve-Path ci-artifacts).Path "source-recording-fixture.log"
           Push-Location $runner
           try {
             cmd.exe /d /s /c "ESRecorder.Cli.exe record --engine-script es/assets/main.mr --output recordings/source --name source-port-smoke --rpm 2000:10000 --throttle 50 --length 1 --warmup 60 --instances 1 > `"$log`" 2>&1"
@@ -241,7 +241,7 @@ jobs:
         shell: powershell
         run: |
           $runner = (Resolve-Path fixture/runner-parity-source).Path
-          $log = (Join-Path (Resolve-Path ci-artifacts).Path "source-batch-recording.log")
+          $log = Join-Path (Resolve-Path ci-artifacts).Path "source-batch-recording.log"
           Push-Location $runner
           try {
             cmd.exe /d /s /c "ESRecorder.Cli.exe record --engine-script es/assets/main.mr --output recordings/batch-source --name source-batch --rpm 2000:10000,4000:10000,6000:10000 --throttle 25,50,100 --length 1 --warmup 60 --instances 1 > `"$log`" 2>&1"
@@ -257,7 +257,7 @@ jobs:
         shell: powershell
         run: |
           $runner = (Resolve-Path fixture/runner-parity-reference).Path
-          $log = (Join-Path (Resolve-Path ci-artifacts).Path "reference-batch-recording.log")
+          $log = Join-Path (Resolve-Path ci-artifacts).Path "reference-batch-recording.log"
           Push-Location $runner
           try {
             cmd.exe /d /s /c "ESRecorder.Cli.exe record --engine-script es/assets/main.mr --output recordings/batch-reference --name reference-batch --rpm 2000:10000,4000:10000,6000:10000 --throttle 25,50,100 --length 1 --warmup 60 --instances 1 > `"$log`" 2>&1"
@@ -377,7 +377,7 @@ jobs:
             --text-output ci-artifacts/parity-batch-summary.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Enforce fresh-process exact nine-point parity
+      - name: Enforce fresh-process statistical nine-point parity
         shell: powershell
         run: |
           $referenceRecording = "fixture/runner-parity-reference/recordings/fresh-reference"
@@ -391,13 +391,28 @@ jobs:
             --reference-directory $referenceRecording `
             --source-directory $sourceRecording `
             --expected-samples 9 `
-            --mode exact `
+            --mode statistical `
+            --power-relative-tolerance 0.0025 `
+            --power-absolute-tolerance-hp 0.25 `
+            --torque-relative-tolerance 0.0025 `
+            --torque-absolute-tolerance-nm 0.5 `
+            --rms-db-tolerance 0.10 `
+            --mean-full-scale-tolerance 0.005 `
+            --zero-crossing-rate-tolerance 0.001 `
+            --crest-factor-relative-tolerance 0.02 `
+            --clipped-sample-tolerance 256 `
+            --peak-absolute-tolerance 512 `
+            --amplitude-percentile-relative-tolerance 0.03 `
+            --amplitude-percentile-absolute-tolerance 256 `
             --json-output ci-artifacts/parity-fresh-report.json `
             --text-output ci-artifacts/parity-fresh-summary.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           @(
-            "PASS: ABI 1010 and ABI 2000 match exactly at nine cold-start operating points.",
+            "PASS: ABI 1010 and ABI 2000 satisfy the nine-point cold-start statistical contract.",
+            "Engine identity, ABI identity, WAV structure and frame count are exact requirements.",
+            "Power, torque and signal-distribution features use explicit bounded tolerances.",
+            "PCM hashes and sample correlation are retained as diagnostics because the renderer uses rand() on an asynchronous audio thread.",
             "Sequential batch-mode differences are published separately as diagnostics.",
             "The engine script bytes are unchanged and identical between hosts.",
             "The ephemeral ../../es wrapper supplies convolution: 1.0 to both DLLs.",
@@ -405,10 +420,11 @@ jobs:
           ) | Set-Content ci-artifacts/parity-status.txt -Encoding utf8
 
       - name: Upload source-built recorder
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: nextcar-esrecord-lib-${{ github.run_attempt }}
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
           path: |
             build-nextcar-recorder/**/esrecord-lib.dll
