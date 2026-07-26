@@ -20,7 +20,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $engineRelativePath = "es/assets/engines/atg-video-2/02_subaru_ej25_uh.mr"
-$pattern = '(?m)^([ \t]*jitter:[ \t]*0\.5,[ \t]*)\r?\n([ \t]*simulation_frequency:[ \t]*20000[ \t]*)$'
+$pattern = '(?m)^([ \t]*)(simulation_frequency:[ \t]*20000[ \t]*)(\r?)$'
 
 function Copy-HostTree {
     param(
@@ -57,12 +57,11 @@ function Add-ExplicitConvolution {
     $expression = New-Object System.Text.RegularExpressions.Regex($pattern)
     $matches = $expression.Matches($text)
     if ($matches.Count -ne 1) {
-        throw "Expected exactly one EJ25 convolution insertion point, observed $($matches.Count)."
+        throw "Expected exactly one EJ25 simulation-frequency insertion point, observed $($matches.Count)."
     }
 
     $newline = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
-    $replacement = '${1}' + $newline +
-        '        convolution: 1.0,' + $newline + '${2}'
+    $replacement = '${1}convolution: 1.0,' + $newline + '${1}${2}${3}'
     $updated = $expression.Replace($text, $replacement, 1)
 
     $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
@@ -71,7 +70,7 @@ function Add-ExplicitConvolution {
     $verification = [System.IO.File]::ReadAllText($enginePath)
     $convolutionCount = [regex]::Matches(
         $verification,
-        '(?m)^[ \t]*convolution:[ \t]*1\.0,[ \t]*$').Count
+        '(?m)^[ \t]*convolution:[ \t]*1\.0,[ \t]*\r?$').Count
     if ($convolutionCount -ne 1) {
         throw "Prepared parity script does not contain exactly one explicit convolution input."
     }
