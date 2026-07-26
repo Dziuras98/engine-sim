@@ -26,7 +26,12 @@ $resolvedHost = (Resolve-Path -LiteralPath $HostRoot).Path
 $absoluteLogRoot = [System.IO.Path]::GetFullPath($LogRoot)
 New-Item -ItemType Directory -Path $absoluteLogRoot -Force | Out-Null
 
-$absoluteOutputRoot = Join-Path $resolvedHost $OutputRoot
+$normalizedOutputRoot = $OutputRoot -replace '[\\/]+$', ''
+if ([string]::IsNullOrWhiteSpace($normalizedOutputRoot)) {
+    throw "OutputRoot must contain a non-separator path."
+}
+
+$absoluteOutputRoot = Join-Path $resolvedHost $normalizedOutputRoot
 if (Test-Path -LiteralPath $absoluteOutputRoot) {
     Remove-Item -LiteralPath $absoluteOutputRoot -Recurse -Force
 }
@@ -38,7 +43,7 @@ try {
     foreach ($rpm in $rpms) {
         foreach ($throttle in $throttles) {
             $point = "$rpm-$throttle"
-            $relativeOutput = $OutputRoot.TrimEnd('/', '\\') + "/" + $point
+            $relativeOutput = $normalizedOutputRoot + "/" + $point
             $logPath = Join-Path $absoluteLogRoot ($NamePrefix + "-" + $point + ".log")
             $arguments = @(
                 "record",
