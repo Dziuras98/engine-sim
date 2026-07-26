@@ -12,8 +12,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $SourceBuiltDestination,
 
-    [Parameter(Mandatory = $true)]
-    [string] $SearchPathObjects,
+    [string] $SearchPathObjects = "es/objects/objects.mr",
 
     [Parameter(Mandatory = $true)]
     [string] $EvidencePath
