@@ -127,7 +127,7 @@ jobs:
             throw "Stable test gate did not report exactly 21 passing tests."
           }
 
-      - name: Capture unchanged legacy test failures
+      - name: Capture unchanged legacy tests independently
         if: always()
         shell: powershell
         run: |
@@ -139,24 +139,70 @@ jobs:
             exit 0
           }
 
-          $included = @(
+          $legacyTests = @(
             "GasSystemTests.PressureEquilibriumMaxFlow",
             "GasSystemTests.PressureEquilibriumMaxFlowInfinite",
             "GasSystemTests.PressureEquilibriumMaxFlowInfiniteOverpressure",
             "FunctionTests.FunctionGaussianTest",
             "SynthesizerTests.SynthesizerSystemTestSingleThread",
             "SynthesizerTests.SynthesizerSystemTest"
-          ) -join ":"
-          $filter = "--gtest_filter=$included"
-          $legacyLog = Join-Path (Resolve-Path ci-core-artifacts).Path `
-            "engine-sim-legacy-tests.log"
-          $command = '"' + $tests[0].FullName + '" "' + $filter + '" > "' + $legacyLog + '" 2>&1'
-          cmd.exe /d /s /c $command
-          $legacyExitCode = $LASTEXITCODE
-          "exit_code=$legacyExitCode" |
-            Set-Content ci-core-artifacts/legacy-test-run.txt -Encoding ascii
-          Get-Content $legacyLog
-          exit 0
+          )
+          $results = @()
+
+          foreach ($legacyTest in $legacyTests) {
+            $slug = $legacyTest -replace '[^A-Za-z0-9_.-]', '_'
+            $legacyLog = Join-Path (Resolve-Path ci-core-artifacts).Path `
+              "legacy-$slug.log"
+            $filter = "--gtest_filter=$legacyTest"
+            $command = '"' + $tests[0].FullName + '" "' + $filter + '" > "' + $legacyLog + '" 2>&1'
+            cmd.exe /d /s /c $command
+            $exitCode = $LASTEXITCODE
+            $output = if (Test-Path $legacyLog) {
+              Get-Content $legacyLog -Raw
+            }
+            else {
+              ""
+            }
+
+            $escapedName = [regex]::Escape($legacyTest)
+            $started = $output -match "\[ RUN      \]\s+$escapedName"
+            $passed = $output -match "\[       OK \]\s+$escapedName"
+            $failed = $output -match "\[  FAILED  \]\s+$escapedName"
+            $status = if ($passed -and $exitCode -eq 0) {
+              "passed"
+            }
+            elseif ($failed) {
+              "failed"
+            }
+            elseif ($started -and $exitCode -ne 0) {
+              "crashed"
+            }
+            else {
+              "inconclusive"
+            }
+
+            $results += [pscustomobject]@{
+              test = $legacyTest
+              status = $status
+              exitCode = $exitCode
+              started = [bool]$started
+              log = [System.IO.Path]::GetFileName($legacyLog)
+            }
+
+            Write-Host "===== $legacyTest ($status, exit $exitCode) ====="
+            if (Test-Path $legacyLog) {
+              Get-Content $legacyLog
+            }
+          }
+
+          $results |
+            ConvertTo-Json -Depth 3 |
+            Set-Content ci-core-artifacts/legacy-test-run.json -Encoding utf8
+
+          $notStarted = @($results | Where-Object { -not $_.started })
+          if ($notStarted.Count -ne 0) {
+            throw "One or more legacy test names were not executed."
+          }
 
       - name: Upload core test diagnostics
         if: always()
