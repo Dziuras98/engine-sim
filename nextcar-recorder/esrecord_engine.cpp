@@ -57,6 +57,28 @@ void releaseCompiledObjects(Instance &instance) {
     instance.engineName.clear();
 }
 
+void releaseDetachedObjects(
+    Engine *&engine,
+    Vehicle *&vehicle,
+    Transmission *&transmission)
+{
+    if (vehicle != nullptr) {
+        delete vehicle;
+        vehicle = nullptr;
+    }
+
+    if (transmission != nullptr) {
+        delete transmission;
+        transmission = nullptr;
+    }
+
+    if (engine != nullptr) {
+        engine->destroy();
+        delete engine;
+        engine = nullptr;
+    }
+}
+
 void persistCompilerLog(const std::int32_t instanceId) {
     namespace fs = std::filesystem;
 
@@ -210,6 +232,7 @@ ESRECORD_API std::int32_t ESRecord_Compile(
     compiler.destroy();
 
     if (!compiled || engine == nullptr) {
+        releaseDetachedObjects(engine, vehicle, transmission);
         instance->state = ESRECORD_STATE_IDLE;
         return 0;
     }
@@ -250,6 +273,9 @@ ESRECORD_API std::int32_t ESRecord_Compile(
     instance->engineName = engine->getName();
 
     const bool initialised = initialiseUnlocked(*instance);
+    if (!initialised) {
+        releaseCompiledObjects(*instance);
+    }
     instance->state = ESRECORD_STATE_IDLE;
     return initialised ? 1 : 0;
 }
@@ -327,20 +353,18 @@ ESRECORD_API const char *ESRecord_GetCompatibilityTarget() {
 ESRECORD_API const char *ESRecord_Engine_GetName(const std::int32_t instanceId) {
     using namespace nextcar::recorder;
 
+    thread_local std::string returnedName;
     Instance *instance = getInstance(instanceId);
     if (instance == nullptr) {
-        return "";
+        returnedName.clear();
+        return returnedName.c_str();
     }
 
     std::lock_guard<std::mutex> lock(instance->mutex);
-    if (instance->engine == nullptr) {
-        instance->engineName.clear();
-    }
-    else {
-        instance->engineName = instance->engine->getName();
-    }
-
-    return instance->engineName.c_str();
+    returnedName = instance->engine == nullptr
+        ? std::string{}
+        : instance->engine->getName();
+    return returnedName.c_str();
 }
 
 ESRECORD_API float ESRecord_Engine_GetRedline(const std::int32_t instanceId) {
