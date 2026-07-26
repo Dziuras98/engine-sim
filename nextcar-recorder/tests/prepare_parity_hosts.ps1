@@ -54,24 +54,18 @@ function Add-ExplicitConvolution {
     }
 
     $text = [System.IO.File]::ReadAllText($enginePath)
-    $matches = [regex]::Matches($text, $pattern)
+    $expression = New-Object System.Text.RegularExpressions.Regex($pattern)
+    $matches = $expression.Matches($text)
     if ($matches.Count -ne 1) {
         throw "Expected exactly one EJ25 convolution insertion point, observed $($matches.Count)."
     }
 
     $newline = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
-    $updated = [regex]::Replace(
-        $text,
-        $pattern,
-        {
-            param($match)
-            $match.Groups[1].Value + $newline +
-                "        convolution: 1.0," + $newline +
-                $match.Groups[2].Value
-        },
-        1)
+    $replacement = '${1}' + $newline +
+        '        convolution: 1.0,' + $newline + '${2}'
+    $updated = $expression.Replace($text, $replacement, 1)
 
-    $utf8WithoutBom = [System.Text.UTF8Encoding]::new($false)
+    $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($enginePath, $updated, $utf8WithoutBom)
 
     $verification = [System.IO.File]::ReadAllText($enginePath)
@@ -85,26 +79,35 @@ function Add-ExplicitConvolution {
     return (Get-FileHash -LiteralPath $enginePath -Algorithm SHA256).Hash
 }
 
-Copy-HostTree -Source $ReferenceSource -Destination $ReferenceDestination
-Copy-HostTree -Source $SourceBuiltSource -Destination $SourceBuiltDestination
-
-$referenceHash = Add-ExplicitConvolution -HostRoot $ReferenceDestination
-$sourceBuiltHash = Add-ExplicitConvolution -HostRoot $SourceBuiltDestination
-if ($referenceHash -ne $sourceBuiltHash) {
-    throw "Reference and source-built parity scripts are not byte-identical."
-}
-
 $evidenceDirectory = Split-Path -Parent $EvidencePath
 if (-not [string]::IsNullOrWhiteSpace($evidenceDirectory)) {
     New-Item -ItemType Directory -Path $evidenceDirectory -Force | Out-Null
 }
 
-@(
-    "engine_relative_path=$engineRelativePath",
-    "sha256=$referenceHash",
-    "reference_host=$ReferenceDestination",
-    "source_built_host=$SourceBuiltDestination"
-) | Set-Content -LiteralPath $EvidencePath -Encoding ascii
+try {
+    Copy-HostTree -Source $ReferenceSource -Destination $ReferenceDestination
+    Copy-HostTree -Source $SourceBuiltSource -Destination $SourceBuiltDestination
 
-Write-Host "Prepared byte-identical explicit-convolution parity hosts."
-Write-Host "Parity engine SHA-256: $referenceHash"
+    $referenceHash = Add-ExplicitConvolution -HostRoot $ReferenceDestination
+    $sourceBuiltHash = Add-ExplicitConvolution -HostRoot $SourceBuiltDestination
+    if ($referenceHash -ne $sourceBuiltHash) {
+        throw "Reference and source-built parity scripts are not byte-identical."
+    }
+
+    @(
+        "engine_relative_path=$engineRelativePath",
+        "sha256=$referenceHash",
+        "reference_host=$ReferenceDestination",
+        "source_built_host=$SourceBuiltDestination"
+    ) | Set-Content -LiteralPath $EvidencePath -Encoding ascii
+
+    Write-Host "Prepared byte-identical explicit-convolution parity hosts."
+    Write-Host "Parity engine SHA-256: $referenceHash"
+}
+catch {
+    $errorPath = $EvidencePath + ".error.txt"
+    $_ | Format-List * -Force | Out-File -LiteralPath $errorPath -Encoding utf8
+    Write-Host "Parity preparation failed; error snapshot: $errorPath"
+    Get-Content -LiteralPath $errorPath
+    throw
+}
