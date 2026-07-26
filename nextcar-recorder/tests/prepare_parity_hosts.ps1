@@ -83,20 +83,20 @@ function Enable-SearchPathConvolution {
 
     $text = Replace-ExactlyOnce `
         -Text $text `
-        -Pattern '(?m)^([ \t]*input noise \[float\];\r?)$' `
+        -Pattern '(?m)^([ \t]*input noise \[float\];)\r?$' `
         -Replacement ('${1}' + $newline + '    input convolution [float];') `
         -Description 'private engine convolution input'
 
     $text = Replace-ExactlyOnce `
         -Text $text `
-        -Pattern '(?m)^([ \t]*input noise: 1\.0;\r?)$' `
+        -Pattern '(?m)^([ \t]*input noise: 1\.0;)\r?$' `
         -Replacement ('${1}' + $newline + '    input convolution: 1.0;') `
         -Description 'public engine convolution default'
 
     $text = Replace-ExactlyOnce `
         -Text $text `
-        -Pattern '(?m)^([ \t]*)noise: noise(\r?)$' `
-        -Replacement ('${1}noise: noise,' + $newline + '${1}convolution: convolution${2}') `
+        -Pattern '(?m)^([ \t]*)noise: noise\r?$' `
+        -Replacement ('${1}noise: noise,' + $newline + '${1}convolution: convolution') `
         -Description 'engine convolution forwarding'
 
     $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
