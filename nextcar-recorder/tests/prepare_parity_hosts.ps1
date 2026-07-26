@@ -13,6 +13,9 @@ param(
     [string] $SourceBuiltDestination,
 
     [Parameter(Mandatory = $true)]
+    [string] $SearchPathObjects,
+
+    [Parameter(Mandatory = $true)]
     [string] $EvidencePath
 )
 
@@ -20,7 +23,6 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $engineRelativePath = "es/assets/engines/atg-video-2/02_subaru_ej25_uh.mr"
-$pattern = '(?m)^([ \t]*)(simulation_frequency:[ \t]*20000[ \t]*)(\r?)$'
 
 function Copy-HostTree {
     param(
@@ -42,40 +44,81 @@ function Copy-HostTree {
     Copy-Item (Join-Path $Source '*') $Destination -Recurse -Force
 }
 
-function Add-ExplicitConvolution {
+function Replace-ExactlyOnce {
     param(
         [Parameter(Mandatory = $true)]
-        [string] $HostRoot
+        [string] $Text,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Pattern,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Replacement,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Description
     )
 
-    $enginePath = Join-Path $HostRoot $engineRelativePath
-    if (-not (Test-Path -LiteralPath $enginePath -PathType Leaf)) {
-        throw "Parity engine script does not exist: $enginePath"
-    }
-
-    $text = [System.IO.File]::ReadAllText($enginePath)
-    $expression = New-Object System.Text.RegularExpressions.Regex($pattern)
-    $matches = $expression.Matches($text)
+    $expression = New-Object System.Text.RegularExpressions.Regex($Pattern)
+    $matches = $expression.Matches($Text)
     if ($matches.Count -ne 1) {
-        throw "Expected exactly one EJ25 simulation-frequency insertion point, observed $($matches.Count)."
+        throw "Expected exactly one $Description match, observed $($matches.Count)."
     }
 
+    return $expression.Replace($Text, $Replacement, 1)
+}
+
+function Enable-SearchPathConvolution {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $ObjectsPath
+    )
+
+    if (-not (Test-Path -LiteralPath $ObjectsPath -PathType Leaf)) {
+        throw "Search-path objects library does not exist: $ObjectsPath"
+    }
+
+    $beforeHash = (Get-FileHash -LiteralPath $ObjectsPath -Algorithm SHA256).Hash
+    $text = [System.IO.File]::ReadAllText($ObjectsPath)
     $newline = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
-    $replacement = '${1}convolution: 1.0,' + $newline + '${1}${2}${3}'
-    $updated = $expression.Replace($text, $replacement, 1)
+
+    $text = Replace-ExactlyOnce `
+        -Text $text `
+        -Pattern '(?m)^([ \t]*input noise \[float\];\r?)$' `
+        -Replacement ('${1}' + $newline + '    input convolution [float];') `
+        -Description 'private engine convolution input'
+
+    $text = Replace-ExactlyOnce `
+        -Text $text `
+        -Pattern '(?m)^([ \t]*input noise: 1\.0;\r?)$' `
+        -Replacement ('${1}' + $newline + '    input convolution: 1.0;') `
+        -Description 'public engine convolution default'
+
+    $text = Replace-ExactlyOnce `
+        -Text $text `
+        -Pattern '(?m)^([ \t]*)noise: noise(\r?)$' `
+        -Replacement ('${1}noise: noise,' + $newline + '${1}convolution: convolution${2}') `
+        -Description 'engine convolution forwarding'
 
     $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($enginePath, $updated, $utf8WithoutBom)
+    [System.IO.File]::WriteAllText($ObjectsPath, $text, $utf8WithoutBom)
 
-    $verification = [System.IO.File]::ReadAllText($enginePath)
-    $convolutionCount = [regex]::Matches(
-        $verification,
-        '(?m)^[ \t]*convolution:[ \t]*1\.0,[ \t]*\r?$').Count
-    if ($convolutionCount -ne 1) {
-        throw "Prepared parity script does not contain exactly one explicit convolution input."
+    $verification = [System.IO.File]::ReadAllText($ObjectsPath)
+    $expectedPatterns = @(
+        '(?m)^[ \t]*input convolution \[float\];\r?$',
+        '(?m)^[ \t]*input convolution: 1\.0;\r?$',
+        '(?m)^[ \t]*convolution: convolution\r?$'
+    )
+    foreach ($expectedPattern in $expectedPatterns) {
+        if ([regex]::Matches($verification, $expectedPattern).Count -ne 1) {
+            throw "Patched search-path wrapper failed convolution verification."
+        }
     }
 
-    return (Get-FileHash -LiteralPath $enginePath -Algorithm SHA256).Hash
+    return [pscustomobject]@{
+        Before = $beforeHash
+        After = (Get-FileHash -LiteralPath $ObjectsPath -Algorithm SHA256).Hash
+    }
 }
 
 $evidenceDirectory = Split-Path -Parent $EvidencePath
@@ -87,21 +130,30 @@ try {
     Copy-HostTree -Source $ReferenceSource -Destination $ReferenceDestination
     Copy-HostTree -Source $SourceBuiltSource -Destination $SourceBuiltDestination
 
-    $referenceHash = Add-ExplicitConvolution -HostRoot $ReferenceDestination
-    $sourceBuiltHash = Add-ExplicitConvolution -HostRoot $SourceBuiltDestination
-    if ($referenceHash -ne $sourceBuiltHash) {
-        throw "Reference and source-built parity scripts are not byte-identical."
+    $referenceEngine = Join-Path $ReferenceDestination $engineRelativePath
+    $sourceEngine = Join-Path $SourceBuiltDestination $engineRelativePath
+    $referenceEngineHash = (Get-FileHash -LiteralPath $referenceEngine -Algorithm SHA256).Hash
+    $sourceEngineHash = (Get-FileHash -LiteralPath $sourceEngine -Algorithm SHA256).Hash
+    if ($referenceEngineHash -ne $sourceEngineHash) {
+        throw "Reference and source-built engine scripts are not byte-identical."
     }
+
+    $wrapperHashes = Enable-SearchPathConvolution -ObjectsPath $SearchPathObjects
 
     @(
         "engine_relative_path=$engineRelativePath",
-        "sha256=$referenceHash",
+        "engine_sha256=$referenceEngineHash",
+        "engine_script_modified=false",
+        "search_path_objects=$SearchPathObjects",
+        "search_path_objects_before_sha256=$($wrapperHashes.Before)",
+        "search_path_objects_after_sha256=$($wrapperHashes.After)",
         "reference_host=$ReferenceDestination",
         "source_built_host=$SourceBuiltDestination"
     ) | Set-Content -LiteralPath $EvidencePath -Encoding ascii
 
-    Write-Host "Prepared byte-identical explicit-convolution parity hosts."
-    Write-Host "Parity engine SHA-256: $referenceHash"
+    Write-Host "Prepared byte-identical parity hosts."
+    Write-Host "Engine script SHA-256: $referenceEngineHash"
+    Write-Host "Patched actual ../../es search-path wrapper: $SearchPathObjects"
 }
 catch {
     $errorPath = $EvidencePath + ".error.txt"
