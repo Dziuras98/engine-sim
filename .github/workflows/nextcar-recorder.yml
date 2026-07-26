@@ -29,7 +29,7 @@ jobs:
   windows-source-build:
     name: Windows x64 source DLL and recording fixture
     runs-on: windows-latest
-    timeout-minutes: 50
+    timeout-minutes: 55
 
     steps:
       - name: Check out engine-sim and recursive dependencies
@@ -42,7 +42,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Dziuras98/ESRecorder-nextcar
-          ref: bb03c4415c2e65d4e744c00382790c75c29d1cac
+          ref: 8f8f7b0fabbbc80f414a003fc1998dda29b28755
           path: fixture/esrecorder
           clean: true
 
@@ -60,6 +60,14 @@ jobs:
             Out-File -FilePath ci-artifacts/piranha-commit.txt -Encoding ascii
           git -C fixture/esrecorder rev-parse HEAD |
             Out-File -FilePath ci-artifacts/esrecorder-commit.txt -Encoding ascii
+
+          $referenceDll = "fixture/esrecorder/es/esrecord-lib.dll"
+          if (-not (Test-Path -LiteralPath $referenceDll -PathType Leaf)) {
+            throw "Pinned ESRecorder fixture does not contain the reference DLL."
+          }
+          Get-FileHash $referenceDll -Algorithm SHA256 |
+            Format-List Algorithm, Hash, Path |
+            Set-Content ci-artifacts/reference-dll-hash.txt -Encoding utf8
 
       - name: Configure MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
@@ -156,15 +164,23 @@ jobs:
             }
           }
 
-      - name: Build pinned managed headless host
+      - name: Build isolated reference and source hosts
         shell: powershell
         run: |
           dotnet build `
             fixture/esrecorder/src/ESRecorder.Cli/ESRecorder.Cli.csproj `
             --configuration Release `
             --runtime win-x64 `
-            --output fixture/runner
+            --output fixture/runner-reference
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $referenceDll = "fixture/runner-reference/es/esrecord-lib.dll"
+          if (-not (Test-Path -LiteralPath $referenceDll -PathType Leaf)) {
+            throw "Managed host output did not preserve the pinned reference DLL."
+          }
+
+          New-Item -ItemType Directory -Path fixture/runner-source -Force | Out-Null
+          Copy-Item fixture/runner-reference/* fixture/runner-source -Recurse -Force
 
           $nativeDll = @(Get-ChildItem build-nextcar-recorder -Recurse `
             -Filter esrecord-lib.dll -File)
@@ -172,16 +188,43 @@ jobs:
             throw "Source-built recorder DLL could not be resolved."
           }
           Copy-Item $nativeDll[0].FullName `
-            fixture/runner/es/esrecord-lib.dll -Force
+            fixture/runner-source/es/esrecord-lib.dll -Force
 
-      - name: Compile MR and record one-second WAV
+      - name: Inspect pinned reference DLL
         shell: powershell
         run: |
-          $runner = (Resolve-Path fixture/runner).Path
-          $log = (Join-Path (Resolve-Path ci-artifacts).Path "recording-fixture.log")
+          $referenceDll = (Resolve-Path fixture/runner-reference/es/esrecord-lib.dll).Path
+          (& dumpbin.exe /dependents $referenceDll | Out-String) |
+            Set-Content ci-artifacts/reference-dependents.txt -Encoding utf8
+          (& dumpbin.exe /exports $referenceDll | Out-String) |
+            Set-Content ci-artifacts/reference-exports.txt -Encoding utf8
+
+      - name: Compile MR and record source-built one-second WAV
+        shell: powershell
+        run: |
+          $runner = (Resolve-Path fixture/runner-source).Path
+          $log = (Join-Path (Resolve-Path ci-artifacts).Path "source-recording-fixture.log")
           Push-Location $runner
           try {
-            cmd.exe /d /s /c "ESRecorder.Cli.exe record --engine-script es/assets/main.mr --output recordings/smoke --name source-port-smoke --rpm 2000:10000 --throttle 50 --length 1 --warmup 60 --instances 1 > `"$log`" 2>&1"
+            cmd.exe /d /s /c "ESRecorder.Cli.exe record --engine-script es/assets/main.mr --output recordings/source --name source-port-smoke --rpm 2000:10000 --throttle 50 --length 1 --warmup 60 --instances 1 > `"$log`" 2>&1"
+            $fixtureExitCode = $LASTEXITCODE
+          }
+          finally {
+            Pop-Location
+          }
+          Get-Content $log
+          if ($fixtureExitCode -ne 0) { exit $fixtureExitCode }
+
+      - name: Compile MR and record pinned reference one-second WAV
+        id: reference_recording
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $runner = (Resolve-Path fixture/runner-reference).Path
+          $log = (Join-Path (Resolve-Path ci-artifacts).Path "reference-recording-fixture.log")
+          Push-Location $runner
+          try {
+            cmd.exe /d /s /c "ESRecorder.Cli.exe record --engine-script es/assets/main.mr --output recordings/reference --name reference-smoke --rpm 2000:10000 --throttle 50 --length 1 --warmup 60 --instances 1 > `"$log`" 2>&1"
             $fixtureExitCode = $LASTEXITCODE
           }
           finally {
@@ -194,19 +237,26 @@ jobs:
         if: always()
         shell: powershell
         run: |
-          $nativeLogs = @(Get-ChildItem fixture/runner/es -File `
-            -Filter "*.log" -ErrorAction SilentlyContinue)
-          foreach ($nativeLog in $nativeLogs) {
-            Copy-Item $nativeLog.FullName `
-              (Join-Path ci-artifacts $nativeLog.Name) -Force
-            Write-Host "Captured $($nativeLog.FullName)"
-            Get-Content $nativeLog.FullName
+          $hosts = @(
+            @{ Prefix = "source"; Path = "fixture/runner-source/es" },
+            @{ Prefix = "reference"; Path = "fixture/runner-reference/es" }
+          )
+          foreach ($hostInfo in $hosts) {
+            $nativeLogs = @(Get-ChildItem $hostInfo.Path -File `
+              -Filter "*.log" -ErrorAction SilentlyContinue)
+            foreach ($nativeLog in $nativeLogs) {
+              $destination = Join-Path ci-artifacts `
+                ($hostInfo.Prefix + "-" + $nativeLog.Name)
+              Copy-Item $nativeLog.FullName $destination -Force
+              Write-Host "Captured $($nativeLog.FullName)"
+              Get-Content $nativeLog.FullName
+            }
           }
 
-      - name: Validate recording fixture artifacts
+      - name: Validate source-built recording fixture
         shell: powershell
         run: |
-          $recording = "fixture/runner/recordings/smoke"
+          $recording = "fixture/runner-source/recordings/source"
           $manifestPath = Join-Path $recording "recording-manifest.json"
           $csvPath = Join-Path $recording "dyno.csv"
           $wavePath = Join-Path $recording "source-port-smoke_2000_50.wav"
@@ -247,9 +297,55 @@ jobs:
             throw "Recorded WAV does not match one-second mono PCM16 at 44.1 kHz."
           }
 
-          Copy-Item $recording ci-artifacts/recording-smoke -Recurse -Force
-          "PASS: real MR compile and WAV recording fixture" |
+          Copy-Item $recording ci-artifacts/recording-source -Recurse -Force
+          "PASS: real MR compile and source-built WAV recording fixture" |
             Set-Content ci-artifacts/recording-fixture-result.txt -Encoding ascii
+
+      - name: Produce black-box reference parity report
+        if: always()
+        shell: powershell
+        env:
+          REFERENCE_STEP_OUTCOME: ${{ steps.reference_recording.outcome }}
+        run: |
+          $referenceRecording = "fixture/runner-reference/recordings/reference"
+          $sourceRecording = "fixture/runner-source/recordings/source"
+          $referenceManifest = Join-Path $referenceRecording "recording-manifest.json"
+          $sourceManifest = Join-Path $sourceRecording "recording-manifest.json"
+          $referenceWave = Join-Path $referenceRecording "reference-smoke_2000_50.wav"
+          $sourceWave = Join-Path $sourceRecording "source-port-smoke_2000_50.wav"
+
+          if (Test-Path -LiteralPath $referenceRecording -PathType Container) {
+            Copy-Item $referenceRecording ci-artifacts/recording-reference -Recurse -Force
+          }
+
+          $required = @($referenceManifest, $sourceManifest, $referenceWave, $sourceWave)
+          $missing = @($required | Where-Object {
+            -not (Test-Path -LiteralPath $_ -PathType Leaf)
+          })
+          if ($missing.Count -ne 0) {
+            @(
+              "Reference parity report unavailable.",
+              "reference_step_outcome=$env:REFERENCE_STEP_OUTCOME",
+              "missing_files:",
+              ($missing -join "`n")
+            ) | Set-Content ci-artifacts/parity-status.txt -Encoding utf8
+            Get-Content ci-artifacts/parity-status.txt
+            exit 0
+          }
+
+          python nextcar-recorder/tests/compare_recordings.py `
+            --reference-manifest $referenceManifest `
+            --source-manifest $sourceManifest `
+            --reference-wav $referenceWave `
+            --source-wav $sourceWave `
+            --json-output ci-artifacts/parity-report.json `
+            --text-output ci-artifacts/parity-summary.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          @(
+            "PASS: pinned ABI 1010 and source-built ABI 2000 outputs were compared.",
+            "No acoustic or telemetry parity thresholds are enforced in this exploratory gate."
+          ) | Set-Content ci-artifacts/parity-status.txt -Encoding utf8
 
       - name: Upload source-built recorder
         uses: actions/upload-artifact@v4
