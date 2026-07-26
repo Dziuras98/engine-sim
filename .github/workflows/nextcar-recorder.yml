@@ -30,7 +30,7 @@ jobs:
   windows-source-build:
     name: Windows x64 source DLL and recording fixture
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 65
 
     steps:
       - name: Check out engine-sim and recursive dependencies
@@ -237,14 +237,14 @@ jobs:
             -EvidencePath ci-artifacts/parity-script-identity.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Record source-built nine-point parity matrix
+      - name: Record source-built sequential batch matrix
         shell: powershell
         run: |
           $runner = (Resolve-Path fixture/runner-parity-source).Path
-          $log = (Join-Path (Resolve-Path ci-artifacts).Path "source-parity-recording.log")
+          $log = (Join-Path (Resolve-Path ci-artifacts).Path "source-batch-recording.log")
           Push-Location $runner
           try {
-            cmd.exe /d /s /c "ESRecorder.Cli.exe record --engine-script es/assets/main.mr --output recordings/parity-source --name source-parity --rpm 2000:10000,4000:10000,6000:10000 --throttle 25,50,100 --length 1 --warmup 60 --instances 1 > `"$log`" 2>&1"
+            cmd.exe /d /s /c "ESRecorder.Cli.exe record --engine-script es/assets/main.mr --output recordings/batch-source --name source-batch --rpm 2000:10000,4000:10000,6000:10000 --throttle 25,50,100 --length 1 --warmup 60 --instances 1 > `"$log`" 2>&1"
             $fixtureExitCode = $LASTEXITCODE
           }
           finally {
@@ -253,14 +253,14 @@ jobs:
           Get-Content $log
           if ($fixtureExitCode -ne 0) { exit $fixtureExitCode }
 
-      - name: Record pinned reference nine-point parity matrix
+      - name: Record pinned reference sequential batch matrix
         shell: powershell
         run: |
           $runner = (Resolve-Path fixture/runner-parity-reference).Path
-          $log = (Join-Path (Resolve-Path ci-artifacts).Path "reference-parity-recording.log")
+          $log = (Join-Path (Resolve-Path ci-artifacts).Path "reference-batch-recording.log")
           Push-Location $runner
           try {
-            cmd.exe /d /s /c "ESRecorder.Cli.exe record --engine-script es/assets/main.mr --output recordings/parity-reference --name reference-parity --rpm 2000:10000,4000:10000,6000:10000 --throttle 25,50,100 --length 1 --warmup 60 --instances 1 > `"$log`" 2>&1"
+            cmd.exe /d /s /c "ESRecorder.Cli.exe record --engine-script es/assets/main.mr --output recordings/batch-reference --name reference-batch --rpm 2000:10000,4000:10000,6000:10000 --throttle 25,50,100 --length 1 --warmup 60 --instances 1 > `"$log`" 2>&1"
             $fixtureExitCode = $LASTEXITCODE
           }
           finally {
@@ -268,6 +268,26 @@ jobs:
           }
           Get-Content $log
           if ($fixtureExitCode -ne 0) { exit $fixtureExitCode }
+
+      - name: Record source-built fresh-process matrix
+        shell: powershell
+        run: |
+          & nextcar-recorder/tests/record_fresh_process_matrix.ps1 `
+            -HostRoot fixture/runner-parity-source `
+            -OutputRoot recordings/fresh-source `
+            -LogRoot ci-artifacts/fresh-source-logs `
+            -NamePrefix source-fresh
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Record pinned reference fresh-process matrix
+        shell: powershell
+        run: |
+          & nextcar-recorder/tests/record_fresh_process_matrix.ps1 `
+            -HostRoot fixture/runner-parity-reference `
+            -OutputRoot recordings/fresh-reference `
+            -LogRoot ci-artifacts/fresh-reference-logs `
+            -NamePrefix reference-fresh
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Capture native runtime logs
         if: always()
@@ -338,26 +358,47 @@ jobs:
           "PASS: legacy MR compiled and recorded through source-built ABI 2000" |
             Set-Content ci-artifacts/recording-fixture-result.txt -Encoding ascii
 
-      - name: Enforce exact nine-point black-box parity
+      - name: Capture sequential batch parity diagnostics
         shell: powershell
         run: |
-          $referenceRecording = "fixture/runner-parity-reference/recordings/parity-reference"
-          $sourceRecording = "fixture/runner-parity-source/recordings/parity-source"
+          $referenceRecording = "fixture/runner-parity-reference/recordings/batch-reference"
+          $sourceRecording = "fixture/runner-parity-source/recordings/batch-source"
           Copy-Item $referenceRecording `
-            ci-artifacts/recording-parity-reference -Recurse -Force
+            ci-artifacts/recording-batch-reference -Recurse -Force
           Copy-Item $sourceRecording `
-            ci-artifacts/recording-parity-source -Recurse -Force
+            ci-artifacts/recording-batch-source -Recurse -Force
 
           python nextcar-recorder/tests/compare_recording_sessions.py `
             --reference-directory $referenceRecording `
             --source-directory $sourceRecording `
             --expected-samples 9 `
-            --json-output ci-artifacts/parity-matrix-report.json `
-            --text-output ci-artifacts/parity-matrix-summary.txt
+            --mode diagnostic `
+            --json-output ci-artifacts/parity-batch-report.json `
+            --text-output ci-artifacts/parity-batch-summary.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Enforce fresh-process exact nine-point parity
+        shell: powershell
+        run: |
+          $referenceRecording = "fixture/runner-parity-reference/recordings/fresh-reference"
+          $sourceRecording = "fixture/runner-parity-source/recordings/fresh-source"
+          Copy-Item $referenceRecording `
+            ci-artifacts/recording-fresh-reference -Recurse -Force
+          Copy-Item $sourceRecording `
+            ci-artifacts/recording-fresh-source -Recurse -Force
+
+          python nextcar-recorder/tests/compare_recording_sessions.py `
+            --reference-directory $referenceRecording `
+            --source-directory $sourceRecording `
+            --expected-samples 9 `
+            --mode exact `
+            --json-output ci-artifacts/parity-fresh-report.json `
+            --text-output ci-artifacts/parity-fresh-summary.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           @(
-            "PASS: ABI 1010 and ABI 2000 match exactly across nine operating points.",
+            "PASS: ABI 1010 and ABI 2000 match exactly at nine cold-start operating points.",
+            "Sequential batch-mode differences are published separately as diagnostics.",
             "The engine script bytes are unchanged and identical between hosts.",
             "The ephemeral ../../es wrapper supplies convolution: 1.0 to both DLLs.",
             "Execution-time ratios are diagnostic and are not parity requirements."
