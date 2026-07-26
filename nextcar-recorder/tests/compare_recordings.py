@@ -33,6 +33,10 @@ class WaveStats:
     crest_factor: float | None
     zero_crossing_rate: float
     clipped_samples: int
+    absolute_p50: float
+    absolute_p90: float
+    absolute_p95: float
+    absolute_p99: float
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,6 +63,19 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def absolute_percentile(samples: array.array[int], fraction: float) -> float:
+    if not 0.0 <= fraction <= 1.0:
+        raise ValueError(f"Percentile fraction must be in [0, 1], observed {fraction}")
+    values = sorted(abs(sample) for sample in samples)
+    position = (len(values) - 1) * fraction
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return float(values[lower])
+    weight = position - lower
+    return values[lower] * (1.0 - weight) + values[upper] * weight
 
 
 def read_wave(path: Path) -> tuple[WaveStats, array.array[int]]:
@@ -117,6 +134,10 @@ def read_wave(path: Path) -> tuple[WaveStats, array.array[int]]:
         crest_factor=(peak / rms) if rms else None,
         zero_crossing_rate=crossings / max(1, count - 1),
         clipped_samples=clipped,
+        absolute_p50=absolute_percentile(samples, 0.50),
+        absolute_p90=absolute_percentile(samples, 0.90),
+        absolute_p95=absolute_percentile(samples, 0.95),
+        absolute_p99=absolute_percentile(samples, 0.99),
     )
     return stats, samples
 
@@ -207,6 +228,13 @@ def build_comparison(
     reference_elapsed = int(reference_measurement.get("elapsedMilliseconds", 0))
     source_elapsed = int(source_measurement.get("elapsedMilliseconds", 0))
 
+    percentile_pairs = {
+        "p50": (reference_wave.absolute_p50, source_wave.absolute_p50),
+        "p90": (reference_wave.absolute_p90, source_wave.absolute_p90),
+        "p95": (reference_wave.absolute_p95, source_wave.absolute_p95),
+        "p99": (reference_wave.absolute_p99, source_wave.absolute_p99),
+    }
+
     return {
         "engineNameMatch": reference_engine.get("name") == source_engine.get("name"),
         "redlineRpmDelta": float(source_engine.get("redlineRpm", 0.0))
@@ -239,6 +267,26 @@ def build_comparison(
             if reference_wave.rms and source_wave.rms
             else None
         ),
+        "waveMeanDelta": source_wave.mean - reference_wave.mean,
+        "wavePeakAbsoluteDelta": source_wave.peak_absolute
+        - reference_wave.peak_absolute,
+        "waveCrestFactorRelativeDelta": relative_delta(
+            reference_wave.crest_factor or 0.0,
+            source_wave.crest_factor or 0.0,
+        ),
+        "waveZeroCrossingRateDelta": source_wave.zero_crossing_rate
+        - reference_wave.zero_crossing_rate,
+        "waveClippedSamplesDelta": source_wave.clipped_samples
+        - reference_wave.clipped_samples,
+        "waveAbsolutePercentiles": {
+            name: {
+                "reference": reference,
+                "source": source,
+                "delta": source - reference,
+                "relativeDelta": relative_delta(reference, source),
+            }
+            for name, (reference, source) in percentile_pairs.items()
+        },
         "samples": sample_comparison(reference_samples, source_samples),
     }
 
@@ -329,6 +377,9 @@ def main() -> int:
         f"WAV format match: {comparison['waveFormatMatch']}",
         f"WAV frame-count delta: {comparison['waveFrameCountDelta']}",
         f"WAV RMS delta dB: {comparison['waveRmsDeltaDb']}",
+        f"WAV mean delta: {comparison['waveMeanDelta']}",
+        f"WAV ZCR delta: {comparison['waveZeroCrossingRateDelta']}",
+        f"WAV clipped-sample delta: {comparison['waveClippedSamplesDelta']}",
         f"sample correlation: {comparison['samples']['pearsonCorrelation']}",
         f"sample RMSE: {comparison['samples']['rootMeanSquareDifference']}",
         f"reference WAV SHA-256: {reference_wave.sha256}",
