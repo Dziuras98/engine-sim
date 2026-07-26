@@ -49,6 +49,7 @@ namespace es_script {
             parameters.intakeCount = (int)intakes.size();
             parameters.throttle = m_throttle->generate();
             engine->initialize(parameters);
+            engine->setInitialConvolution(parameters.initialConvolution);
 
             {
                 int i = 0;
@@ -164,6 +165,7 @@ namespace es_script {
             addInput("hf_gain", &m_parameters.initialHighFrequencyGain);
             addInput("jitter", &m_parameters.initialJitter);
             addInput("noise", &m_parameters.initialNoise);
+            addOptionalInput("convolution", &m_parameters.initialConvolution);
 
             ObjectReferenceNode<EngineNode>::registerInputs();
         }

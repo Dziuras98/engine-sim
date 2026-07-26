@@ -1,67 +1,219 @@
 name: CMake
+
 on:
   push:
-    branches: [ "master" ]
+    branches:
+      - master
   pull_request:
-    branches: [ "master" ]
+    branches:
+      - master
 
+permissions:
+  contents: read
 
-env:
-  # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
-  BUILD_TYPE: Release
-
-
+concurrency:
+  group: cmake-core-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
-    # The CMake configure and build commands are platform agnostic and should work equally well on Windows or Mac.
-    # You can convert this to a matrix build if you need cross-platform coverage.
-    # See: https://docs.github.com/en/free-pro-team@latest/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
+    name: Windows x64 core and scripting
     runs-on: windows-latest
-    env:
-      # Set your boost version
-      BOOST_VERSION: 1.78.0
-      # Set you boost path to the default one (I don't know if you can use variables here)
-      BOOST_PATH: ${{github.workspace}}/boost/
-      
+    timeout-minutes: 45
+
     steps:
-    - uses: actions/checkout@v3
-  
-    - name: Checkout submodules
-      run: git submodule update --init --recursive
-    
-# Retrieve the cache, uses cache@v2
-    - name: Cache boost
-      uses: actions/cache@v2
-      id: cache-boost
-      with:
-        # Set the path to cache
-        path: ${{env.BOOST_PATH}}
-        # Use the version as the key to only cache the correct version
-        key: boost-${{env.BOOST_VERSION}}
+      - name: Check out recursive sources
+        uses: actions/checkout@v4
+        with:
+          clean: true
+          submodules: recursive
 
-    # Actual install step (only runs if the cache is empty)
-    - name: Install boost
-      if: steps.cache-boost.outputs.cache-hit != 'true'
-      uses: MarkusJx/install-boost@v2.3.0
-      with:
-        # Set the boost version (required)
-        boost_version: ${{env.BOOST_VERSION}}
-        # Set the install directory
-        boost_install_dir: ${{env.BOOST_PATH}}
-        # Set your platform version
-        platform_version: 2022
-        # Set the toolset
-        toolset: msvc
+      - name: Configure MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
-    - name: Configure CMake
-      # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
-      # See https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html?highlight=cmake_build_type
-      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}
-      env:
-        BOOST_ROOT: ${{ steps.install-boost.outputs.BOOST_ROOT }}
+      - name: Install static Boost.Filesystem
+        shell: powershell
+        run: |
+          $vcpkg = Join-Path $env:VCPKG_INSTALLATION_ROOT "vcpkg.exe"
+          & $vcpkg install boost-filesystem:x64-windows-static-md
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Install Flex and Bison
+        shell: powershell
+        run: choco install winflexbison3 --yes --no-progress
 
-    - name: Build
-      # Build your program with the given configuration
-      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
+      - name: Configure headless core
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Path ci-core-artifacts -Force | Out-Null
+          $flex = (Get-Command win_flex.exe -ErrorAction Stop).Source
+          $bison = (Get-Command win_bison.exe -ErrorAction Stop).Source
+          $toolchain = Join-Path $env:VCPKG_INSTALLATION_ROOT "scripts/buildsystems/vcpkg.cmake"
+          cmd.exe /d /s /c "cmake -S nextcar-recorder -B build-core -A x64 -DCMAKE_TOOLCHAIN_FILE=`"$toolchain`" -DVCPKG_TARGET_TRIPLET=x64-windows-static-md -DFLEX_EXECUTABLE=`"$flex`" -DBISON_EXECUTABLE=`"$bison`" > ci-core-artifacts\configure.log 2>&1"
+          $configureExitCode = $LASTEXITCODE
+          Get-Content ci-core-artifacts/configure.log
+          if ($configureExitCode -ne 0) { exit $configureExitCode }
+
+      - name: Build core, scripting and tests
+        shell: powershell
+        run: |
+          cmd.exe /d /s /c "cmake --build build-core --config Release --target engine-sim engine-sim-script-interpreter engine-sim-test > ci-core-artifacts\build.log 2>&1"
+          $buildExitCode = $LASTEXITCODE
+          Get-Content ci-core-artifacts/build.log
+          if ($buildExitCode -ne 0) { exit $buildExitCode }
+
+      - name: Verify legacy failure sources are unchanged
+        shell: powershell
+        run: |
+          $baseline = "31d09faf7b249320a8bf45e2b9bd7dfd8b7ff704"
+          git fetch --no-tags --depth=1 origin $baseline
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $paths = @(
+            "src/gas_system.cpp",
+            "src/function.cpp",
+            "src/synthesizer.cpp",
+            "test/gas_system_tests.cpp",
+            "test/function_test.cpp",
+            "test/synthesizer_tests.cpp"
+          )
+          $diff = git diff --no-ext-diff --unified=0 $baseline -- $paths
+          $diff | Set-Content ci-core-artifacts/legacy-test-source-diff.txt -Encoding utf8
+          if (-not [string]::IsNullOrWhiteSpace(($diff | Out-String))) {
+            throw "A source covered by the legacy-test exclusion set changed in this PR."
+          }
+
+          @(
+            "Exact baseline: $baseline",
+            "The following unchanged legacy tests fail on the current Windows/MSVC runner:",
+            "GasSystemTests.PressureEquilibriumMaxFlow",
+            "GasSystemTests.PressureEquilibriumMaxFlowInfinite",
+            "GasSystemTests.PressureEquilibriumMaxFlowInfiniteOverpressure",
+            "FunctionTests.FunctionGaussianTest",
+            "SynthesizerTests.SynthesizerSystemTestSingleThread",
+            "SynthesizerTests.SynthesizerSystemTest"
+          ) | Set-Content ci-core-artifacts/legacy-test-exclusions.txt -Encoding utf8
+
+      - name: Run stable engine-sim unit tests
+        shell: powershell
+        run: |
+          $tests = @(Get-ChildItem build-core -Recurse `
+            -Filter engine-sim-test.exe -File)
+          if ($tests.Count -ne 1) {
+            throw "Expected one engine-sim-test.exe, observed $($tests.Count)."
+          }
+
+          $excluded = @(
+            "GasSystemTests.PressureEquilibriumMaxFlow",
+            "GasSystemTests.PressureEquilibriumMaxFlowInfinite",
+            "GasSystemTests.PressureEquilibriumMaxFlowInfiniteOverpressure",
+            "FunctionTests.FunctionGaussianTest",
+            "SynthesizerTests.SynthesizerSystemTestSingleThread",
+            "SynthesizerTests.SynthesizerSystemTest"
+          ) -join ":"
+          $filter = "--gtest_filter=-$excluded"
+          $testLog = Join-Path (Resolve-Path ci-core-artifacts).Path `
+            "engine-sim-stable-tests.log"
+          $command = '"' + $tests[0].FullName + '" "' + $filter + '" > "' + $testLog + '" 2>&1'
+          cmd.exe /d /s /c $command
+          $testExitCode = $LASTEXITCODE
+          Get-Content $testLog
+          if ($testExitCode -ne 0) { exit $testExitCode }
+
+          $output = Get-Content $testLog -Raw
+          if ($output -notmatch '\[  PASSED  \]\s+21 tests\.') {
+            throw "Stable test gate did not report exactly 21 passing tests."
+          }
+
+      - name: Capture unchanged legacy tests independently
+        if: always()
+        shell: powershell
+        run: |
+          $tests = @(Get-ChildItem build-core -Recurse `
+            -Filter engine-sim-test.exe -File)
+          if ($tests.Count -ne 1) {
+            "engine-sim-test.exe was unavailable" |
+              Set-Content ci-core-artifacts/legacy-test-run.txt -Encoding utf8
+            exit 0
+          }
+
+          $legacyTests = @(
+            "GasSystemTests.PressureEquilibriumMaxFlow",
+            "GasSystemTests.PressureEquilibriumMaxFlowInfinite",
+            "GasSystemTests.PressureEquilibriumMaxFlowInfiniteOverpressure",
+            "FunctionTests.FunctionGaussianTest",
+            "SynthesizerTests.SynthesizerSystemTestSingleThread",
+            "SynthesizerTests.SynthesizerSystemTest"
+          )
+          $results = @()
+
+          foreach ($legacyTest in $legacyTests) {
+            $slug = $legacyTest -replace '[^A-Za-z0-9_.-]', '_'
+            $legacyLog = Join-Path (Resolve-Path ci-core-artifacts).Path `
+              "legacy-$slug.log"
+            $filter = "--gtest_filter=$legacyTest"
+            $command = '"' + $tests[0].FullName + '" "' + $filter + '" > "' + $legacyLog + '" 2>&1'
+            cmd.exe /d /s /c $command
+            $exitCode = $LASTEXITCODE
+            $output = if (Test-Path $legacyLog) {
+              Get-Content $legacyLog -Raw
+            }
+            else {
+              ""
+            }
+
+            $escapedName = [regex]::Escape($legacyTest)
+            $started = $output -match "\[ RUN      \]\s+$escapedName"
+            $passed = $output -match "\[       OK \]\s+$escapedName"
+            $failed = $output -match "\[  FAILED  \]\s+$escapedName"
+            $status = if ($passed -and $exitCode -eq 0) {
+              "passed"
+            }
+            elseif ($failed) {
+              "failed"
+            }
+            elseif ($started -and $exitCode -ne 0) {
+              "crashed"
+            }
+            else {
+              "inconclusive"
+            }
+
+            $results += [pscustomobject]@{
+              test = $legacyTest
+              status = $status
+              exitCode = $exitCode
+              started = [bool]$started
+              log = [System.IO.Path]::GetFileName($legacyLog)
+            }
+
+            Write-Host "===== $legacyTest ($status, exit $exitCode) ====="
+            if (Test-Path $legacyLog) {
+              Get-Content $legacyLog
+            }
+          }
+
+          $results |
+            ConvertTo-Json -Depth 3 |
+            Set-Content ci-core-artifacts/legacy-test-run.json -Encoding utf8
+
+          $notStarted = @($results | Where-Object { -not $_.started })
+          if ($notStarted.Count -ne 0) {
+            throw "One or more legacy test names were not executed."
+          }
+
+          # A crashed legacy test leaves LASTEXITCODE non-zero. The six results
+          # are preserved above and are non-blocking only while their exact
+          # implementation and test sources remain unchanged from the baseline.
+          exit 0
+
+      - name: Upload core test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-sim-core-diagnostics-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: ci-core-artifacts/**

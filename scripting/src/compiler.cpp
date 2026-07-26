@@ -19,12 +19,18 @@ es_script::Compiler::Output *es_script::Compiler::output() {
 }
 
 void es_script::Compiler::initialize() {
+    // Compiler output is static in the frozen interpreter. Recorder compilation
+    // is serialized, so reset it before the next graph is built and initialized.
+    // Resetting in execute() would invalidate state already bound by that graph.
+    *output() = Output{};
+
     m_compiler = new piranha::Compiler(&m_rules);
     m_compiler->setFileExtension(".mr");
 
     m_compiler->addSearchPath("../../es/");
     m_compiler->addSearchPath("../es/");
     m_compiler->addSearchPath("es/");
+    m_compiler->addSearchPath("es/es/");
 
     m_rules.initialize();
 }
@@ -41,9 +47,7 @@ bool es_script::Compiler::compile(const piranha::IrPath &path) {
         const piranha::ErrorList *errors = m_compiler->getErrorList();
         if (errors->getErrorCount() == 0) {
             unit->build(&m_program);
-
             m_program.initialize();
-
             successful = true;
         }
         else {
@@ -54,17 +58,13 @@ bool es_script::Compiler::compile(const piranha::IrPath &path) {
     }
 
     file.close();
-
     return successful;
 }
 
 es_script::Compiler::Output es_script::Compiler::execute() {
-    const bool result = m_program.execute();
-
-    if (!result) {
-        // Todo: Runtime error
-    }
-
+    // Preserve the historical interpreter contract: action nodes may populate
+    // the output even when the root program has no scalar return value.
+    m_program.execute();
     return *output();
 }
 

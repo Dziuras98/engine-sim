@@ -38,6 +38,7 @@ class IgnitionModule : public Part {
         void resetIgnitionEvents();
 
         double getTimingAdvance();
+        void setRevlimit(double revlimit) { m_revLimit = revlimit; }
 
         bool m_enabled;
 

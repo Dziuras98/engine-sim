@@ -1,0 +1,441 @@
+name: nEXTcAR recorder port
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "CMakeLists.txt"
+      - "include/engine.h"
+      - "include/ignition_module.h"
+      - "dependencies/submodules/CMakeLists.txt"
+      - "scripting/include/engine_node.h"
+      - "scripting/include/node.h"
+      - "scripting/src/compiler.cpp"
+      - "nextcar-recorder/**"
+      - ".github/workflows/nextcar-recorder.yml"
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nextcar-recorder-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-source-build:
+    name: Windows x64 source DLL and statistical parity
+    runs-on: windows-latest
+    timeout-minutes: 70
+
+    steps:
+      - name: Check out engine-sim and recursive dependencies
+        uses: actions/checkout@v4
+        with:
+          clean: true
+          submodules: recursive
+
+      - name: Check out pinned ESRecorder headless fixture
+        uses: actions/checkout@v4
+        with:
+          repository: Dziuras98/ESRecorder-nextcar
+          ref: 8f8f7b0fabbbc80f414a003fc1998dda29b28755
+          path: fixture/esrecorder
+          clean: true
+
+      - name: Capture dependency source identity
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Path ci-artifacts -Force | Out-Null
+          git submodule status --recursive |
+            Out-File -FilePath ci-artifacts/submodules.txt -Encoding utf8
+          Copy-Item dependencies/submodules/piranha/src/path.cpp `
+            ci-artifacts/piranha-path.cpp
+          Copy-Item dependencies/submodules/piranha/include/path.h `
+            ci-artifacts/piranha-path.h
+          git -C dependencies/submodules/piranha rev-parse HEAD |
+            Out-File -FilePath ci-artifacts/piranha-commit.txt -Encoding ascii
+          git -C fixture/esrecorder rev-parse HEAD |
+            Out-File -FilePath ci-artifacts/esrecorder-commit.txt -Encoding ascii
+
+          $referenceDll = "fixture/esrecorder/es/esrecord-lib.dll"
+          if (-not (Test-Path -LiteralPath $referenceDll -PathType Leaf)) {
+            throw "Pinned ESRecorder fixture does not contain the reference DLL."
+          }
+          $referenceHash = Get-FileHash $referenceDll -Algorithm SHA256
+          @(
+            "algorithm=$($referenceHash.Algorithm)",
+            "sha256=$($referenceHash.Hash)",
+            "path=$($referenceHash.Path)"
+          ) | Set-Content ci-artifacts/reference-dll-hash.txt -Encoding ascii
+
+      - name: Configure MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install static Boost.Filesystem
+        shell: powershell
+        run: |
+          $vcpkg = Join-Path $env:VCPKG_INSTALLATION_ROOT "vcpkg.exe"
+          & $vcpkg install boost-filesystem:x64-windows-static-md
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Install Flex and Bison
+        shell: powershell
+        run: choco install winflexbison3 --yes --no-progress
+
+      - name: Configure recorder source build
+        shell: powershell
+        run: |
+          $flex = (Get-Command win_flex.exe -ErrorAction Stop).Source
+          $bison = (Get-Command win_bison.exe -ErrorAction Stop).Source
+          $toolchain = Join-Path $env:VCPKG_INSTALLATION_ROOT "scripts/buildsystems/vcpkg.cmake"
+          $command = 'cmake -S nextcar-recorder -B build-nextcar-recorder -A x64 ' +
+            '"-DCMAKE_TOOLCHAIN_FILE=' + $toolchain + '" ' +
+            '"-DVCPKG_TARGET_TRIPLET=x64-windows-static-md" ' +
+            '"-DFLEX_EXECUTABLE=' + $flex + '" ' +
+            '"-DBISON_EXECUTABLE=' + $bison + '" ' +
+            '> ci-artifacts\configure.log 2>&1'
+          cmd.exe /d /s /c $command
+          $configureExitCode = $LASTEXITCODE
+          Get-Content ci-artifacts/configure.log
+          if ($configureExitCode -ne 0) { exit $configureExitCode }
+
+      - name: Build recorder DLL and ABI tests
+        shell: powershell
+        run: |
+          cmd.exe /d /s /c "cmake --build build-nextcar-recorder --config Release --target esrecord-lib nextcar-recorder-abi-layout-test nextcar-recorder-abi-runtime-test > ci-artifacts\build.log 2>&1"
+          $buildExitCode = $LASTEXITCODE
+          Get-Content ci-artifacts/build.log
+          if ($buildExitCode -ne 0) { exit $buildExitCode }
+
+      - name: Run ABI layout and runtime tests
+        shell: powershell
+        run: |
+          cmd.exe /d /s /c "ctest --test-dir build-nextcar-recorder -C Release --output-on-failure -R nextcar-recorder-abi > ci-artifacts\ctest.log 2>&1"
+          $testExitCode = $LASTEXITCODE
+          Get-Content ci-artifacts/ctest.log
+          if ($testExitCode -ne 0) { exit $testExitCode }
+
+      - name: Verify DLL exports, dependencies and identity
+        shell: powershell
+        run: |
+          $dlls = @(Get-ChildItem build-nextcar-recorder -Recurse `
+            -Filter esrecord-lib.dll -File)
+          if ($dlls.Count -ne 1) {
+            throw "Expected exactly one esrecord-lib.dll, observed $($dlls.Count)."
+          }
+          $dll = $dlls[0]
+          $dll | Format-List FullName, Length, LastWriteTimeUtc |
+            Tee-Object -FilePath ci-artifacts/outputs.txt
+
+          $sourceHash = Get-FileHash $dll.FullName -Algorithm SHA256
+          @(
+            "algorithm=$($sourceHash.Algorithm)",
+            "sha256=$($sourceHash.Hash)",
+            "path=$($sourceHash.Path)"
+          ) | Set-Content ci-artifacts/source-dll-hash.txt -Encoding ascii
+
+          $dependents = (& dumpbin.exe /dependents $dll.FullName | Out-String)
+          $dependents | Set-Content ci-artifacts/dependents.txt -Encoding utf8
+          if ($dependents -match '(?i)boost_[^\s]*\.dll') {
+            throw "Recorder DLL has an external Boost runtime dependency."
+          }
+
+          $exports = (& dumpbin.exe /exports $dll.FullName | Out-String)
+          $exports | Set-Content ci-artifacts/exports.txt -Encoding utf8
+          $requiredExports = @(
+            'ESRecord_Compile',
+            'ESRecord_Initialise',
+            'ESRecord_Update',
+            'ESRecord_Record',
+            'ESRecord_GetSimState',
+            'ESRecord_GetState',
+            'ESRecord_GetVersion',
+            'ESRecord_GetMaxInstances',
+            'ESRecord_GetEngineSimSourceRevision',
+            'ESRecord_GetCompatibilityTarget',
+            'ESRecord_Engine_GetName',
+            'ESRecord_Engine_GetRedline',
+            'ESRecord_Engine_GetDisplacement'
+          )
+          foreach ($requiredExport in $requiredExports) {
+            if ($exports -notmatch [regex]::Escape($requiredExport)) {
+              throw "Recorder DLL is missing export $requiredExport."
+            }
+          }
+
+      - name: Build isolated reference and source hosts
+        shell: powershell
+        run: |
+          dotnet build `
+            fixture/esrecorder/src/ESRecorder.Cli/ESRecorder.Cli.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --output fixture/runner-reference
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $referenceDll = "fixture/runner-reference/es/esrecord-lib.dll"
+          if (-not (Test-Path -LiteralPath $referenceDll -PathType Leaf)) {
+            throw "Managed host output did not preserve the pinned reference DLL."
+          }
+
+          New-Item -ItemType Directory -Path fixture/runner-source -Force | Out-Null
+          Copy-Item fixture/runner-reference/* fixture/runner-source -Recurse -Force
+
+          $nativeDll = @(Get-ChildItem build-nextcar-recorder -Recurse `
+            -Filter esrecord-lib.dll -File)
+          if ($nativeDll.Count -ne 1) {
+            throw "Source-built recorder DLL could not be resolved."
+          }
+          Copy-Item $nativeDll[0].FullName `
+            fixture/runner-source/es/esrecord-lib.dll -Force
+
+      - name: Inspect pinned reference DLL
+        shell: powershell
+        run: |
+          $referenceDll = (Resolve-Path fixture/runner-reference/es/esrecord-lib.dll).Path
+          (& dumpbin.exe /dependents $referenceDll | Out-String) |
+            Set-Content ci-artifacts/reference-dependents.txt -Encoding utf8
+          (& dumpbin.exe /exports $referenceDll | Out-String) |
+            Set-Content ci-artifacts/reference-exports.txt -Encoding utf8
+
+      - name: Compile legacy MR and record source-built one-second WAV
+        shell: powershell
+        run: |
+          $runner = (Resolve-Path fixture/runner-source).Path
+          $log = Join-Path (Resolve-Path ci-artifacts).Path "source-recording-fixture.log"
+          Push-Location $runner
+          try {
+            cmd.exe /d /s /c "ESRecorder.Cli.exe record --engine-script es/assets/main.mr --output recordings/source --name source-port-smoke --rpm 2000:10000 --throttle 50 --length 1 --warmup 60 --instances 1 > `"$log`" 2>&1"
+            $fixtureExitCode = $LASTEXITCODE
+          }
+          finally {
+            Pop-Location
+          }
+          Get-Content $log
+          if ($fixtureExitCode -ne 0) { exit $fixtureExitCode }
+
+      - name: Prepare byte-identical parity hosts and search-path wrapper
+        shell: powershell
+        run: |
+          & nextcar-recorder/tests/prepare_parity_hosts.ps1 `
+            -ReferenceSource fixture/runner-reference `
+            -SourceBuiltSource fixture/runner-source `
+            -ReferenceDestination fixture/runner-parity-reference `
+            -SourceBuiltDestination fixture/runner-parity-source `
+            -EvidencePath ci-artifacts/parity-script-identity.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Record source-built sequential batch matrix
+        shell: powershell
+        run: |
+          $runner = (Resolve-Path fixture/runner-parity-source).Path
+          $log = Join-Path (Resolve-Path ci-artifacts).Path "source-batch-recording.log"
+          Push-Location $runner
+          try {
+            cmd.exe /d /s /c "ESRecorder.Cli.exe record --engine-script es/assets/main.mr --output recordings/batch-source --name source-batch --rpm 2000:10000,4000:10000,6000:10000 --throttle 25,50,100 --length 1 --warmup 60 --instances 1 > `"$log`" 2>&1"
+            $fixtureExitCode = $LASTEXITCODE
+          }
+          finally {
+            Pop-Location
+          }
+          Get-Content $log
+          if ($fixtureExitCode -ne 0) { exit $fixtureExitCode }
+
+      - name: Record pinned reference sequential batch matrix
+        shell: powershell
+        run: |
+          $runner = (Resolve-Path fixture/runner-parity-reference).Path
+          $log = Join-Path (Resolve-Path ci-artifacts).Path "reference-batch-recording.log"
+          Push-Location $runner
+          try {
+            cmd.exe /d /s /c "ESRecorder.Cli.exe record --engine-script es/assets/main.mr --output recordings/batch-reference --name reference-batch --rpm 2000:10000,4000:10000,6000:10000 --throttle 25,50,100 --length 1 --warmup 60 --instances 1 > `"$log`" 2>&1"
+            $fixtureExitCode = $LASTEXITCODE
+          }
+          finally {
+            Pop-Location
+          }
+          Get-Content $log
+          if ($fixtureExitCode -ne 0) { exit $fixtureExitCode }
+
+      - name: Record source-built fresh-process matrix
+        shell: powershell
+        run: |
+          & nextcar-recorder/tests/record_fresh_process_matrix.ps1 `
+            -HostRoot fixture/runner-parity-source `
+            -OutputRoot recordings/fresh-source `
+            -LogRoot ci-artifacts/fresh-source-logs `
+            -NamePrefix source-fresh
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Record pinned reference fresh-process matrix
+        shell: powershell
+        run: |
+          & nextcar-recorder/tests/record_fresh_process_matrix.ps1 `
+            -HostRoot fixture/runner-parity-reference `
+            -OutputRoot recordings/fresh-reference `
+            -LogRoot ci-artifacts/fresh-reference-logs `
+            -NamePrefix reference-fresh
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Capture native runtime logs
+        if: always()
+        shell: powershell
+        run: |
+          $hosts = @(
+            @{ Prefix = "source-smoke"; Path = "fixture/runner-source/es" },
+            @{ Prefix = "source-parity"; Path = "fixture/runner-parity-source/es" },
+            @{ Prefix = "reference-parity"; Path = "fixture/runner-parity-reference/es" }
+          )
+          foreach ($hostInfo in $hosts) {
+            $nativeLogs = @(Get-ChildItem $hostInfo.Path -File `
+              -Filter "*.log" -ErrorAction SilentlyContinue)
+            foreach ($nativeLog in $nativeLogs) {
+              $destination = Join-Path ci-artifacts `
+                ($hostInfo.Prefix + "-" + $nativeLog.Name)
+              Copy-Item $nativeLog.FullName $destination -Force
+              Write-Host "Captured $($nativeLog.FullName)"
+              Get-Content $nativeLog.FullName
+            }
+          }
+
+      - name: Validate source-built legacy-script fixture
+        shell: powershell
+        run: |
+          $recording = "fixture/runner-source/recordings/source"
+          $manifestPath = Join-Path $recording "recording-manifest.json"
+          $csvPath = Join-Path $recording "dyno.csv"
+          $wavePath = Join-Path $recording "source-port-smoke_2000_50.wav"
+          foreach ($path in @($manifestPath, $csvPath, $wavePath)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Recording fixture is missing $path."
+            }
+          }
+
+          $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+          if ($manifest.engine.nativeLibraryVersion -ne 2000) {
+            throw "Manifest did not record native ABI 2000."
+          }
+          if ([string]::IsNullOrWhiteSpace($manifest.engine.name)) {
+            throw "Manifest engine name is empty."
+          }
+          if (@($manifest.measurements).Count -ne 1) {
+            throw "Expected one recorded measurement."
+          }
+
+          $csvLines = @(Get-Content $csvPath)
+          if ($csvLines.Count -ne 2) {
+            throw "Expected CSV header plus one measurement."
+          }
+
+          $wave = [System.IO.File]::ReadAllBytes($wavePath)
+          if ($wave.Length -le 88244) {
+            throw "Recorded WAV is too short or has no metadata chunk."
+          }
+          if ([Text.Encoding]::ASCII.GetString($wave, 0, 4) -ne 'RIFF' -or
+              [Text.Encoding]::ASCII.GetString($wave, 8, 4) -ne 'WAVE' -or
+              [Text.Encoding]::ASCII.GetString($wave, 36, 4) -ne 'data') {
+            throw "Recorded file has an invalid RIFF/WAVE header."
+          }
+          if ([BitConverter]::ToInt32($wave, 24) -ne 44100 -or
+              [BitConverter]::ToInt16($wave, 34) -ne 16 -or
+              [BitConverter]::ToInt32($wave, 40) -ne 88200) {
+            throw "Recorded WAV does not match one-second mono PCM16 at 44.1 kHz."
+          }
+
+          Copy-Item $recording ci-artifacts/recording-source-smoke -Recurse -Force
+          "PASS: legacy MR compiled and recorded through source-built ABI 2000" |
+            Set-Content ci-artifacts/recording-fixture-result.txt -Encoding ascii
+
+      - name: Capture sequential batch parity diagnostics
+        shell: powershell
+        run: |
+          $referenceRecording = "fixture/runner-parity-reference/recordings/batch-reference"
+          $sourceRecording = "fixture/runner-parity-source/recordings/batch-source"
+          Copy-Item $referenceRecording `
+            ci-artifacts/recording-batch-reference -Recurse -Force
+          Copy-Item $sourceRecording `
+            ci-artifacts/recording-batch-source -Recurse -Force
+
+          python nextcar-recorder/tests/compare_recording_sessions.py `
+            --reference-directory $referenceRecording `
+            --source-directory $sourceRecording `
+            --expected-samples 9 `
+            --mode diagnostic `
+            --json-output ci-artifacts/parity-batch-report.json `
+            --text-output ci-artifacts/parity-batch-summary.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Enforce fresh-process statistical nine-point parity
+        shell: powershell
+        run: |
+          $referenceRecording = "fixture/runner-parity-reference/recordings/fresh-reference"
+          $sourceRecording = "fixture/runner-parity-source/recordings/fresh-source"
+          Copy-Item $referenceRecording `
+            ci-artifacts/recording-fresh-reference -Recurse -Force
+          Copy-Item $sourceRecording `
+            ci-artifacts/recording-fresh-source -Recurse -Force
+
+          python nextcar-recorder/tests/compare_recording_sessions.py `
+            --reference-directory $referenceRecording `
+            --source-directory $sourceRecording `
+            --expected-samples 9 `
+            --mode statistical `
+            --power-relative-tolerance 0.0025 `
+            --power-absolute-tolerance-hp 0.25 `
+            --torque-relative-tolerance 0.0025 `
+            --torque-absolute-tolerance-nm 0.5 `
+            --rms-db-tolerance 0.10 `
+            --mean-full-scale-tolerance 0.005 `
+            --zero-crossing-rate-tolerance 0.001 `
+            --crest-factor-relative-tolerance 0.02 `
+            --clipped-sample-tolerance 256 `
+            --peak-absolute-tolerance 512 `
+            --amplitude-percentile-relative-tolerance 0.03 `
+            --amplitude-percentile-absolute-tolerance 256 `
+            --json-output ci-artifacts/parity-fresh-report.json `
+            --text-output ci-artifacts/parity-fresh-summary.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          @(
+            "PASS: ABI 1010 and ABI 2000 satisfy the nine-point cold-start statistical contract.",
+            "Engine identity, ABI identity, WAV structure and frame count are exact requirements.",
+            "Power, torque and signal-distribution features use explicit bounded tolerances.",
+            "PCM hashes and sample correlation are retained as diagnostics because the renderer uses rand() on an asynchronous audio thread.",
+            "Sequential batch-mode differences are published separately as diagnostics.",
+            "The engine script bytes are unchanged and identical between hosts.",
+            "The ephemeral ../../es wrapper supplies convolution: 1.0 to both DLLs.",
+            "Execution-time ratios are diagnostic and are not parity requirements."
+          ) | Set-Content ci-artifacts/parity-status.txt -Encoding utf8
+
+      - name: Upload source-built recorder
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextcar-esrecord-lib-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            build-nextcar-recorder/**/esrecord-lib.dll
+            build-nextcar-recorder/**/nextcar-recorder-abi-layout-test.exe
+            build-nextcar-recorder/**/nextcar-recorder-abi-runtime-test.exe
+
+      - name: Upload recorder diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextcar-recorder-diagnostics-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: ci-artifacts/**
