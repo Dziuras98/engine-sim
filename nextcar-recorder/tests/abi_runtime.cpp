@@ -1,12 +1,23 @@
 #include "../esrecord_api.h"
 
-#include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <limits>
 
 namespace {
 
 bool equals(const char *actual, const char *expected) {
     return actual != nullptr && std::strcmp(actual, expected) == 0;
+}
+
+void setOutputPath(SampleConfig &config, const char *path) {
+    std::strncpy(config.output, path, sizeof(config.output) - 1);
+    config.output[sizeof(config.output) - 1] = '\0';
+}
+
+bool fileDoesNotExist(const char *path) {
+    std::error_code error;
+    return !std::filesystem::exists(path, error);
 }
 
 } // namespace
@@ -50,10 +61,47 @@ int main() {
     // An empty slot is valid but must not report a ready simulator yet.
     if (ESRecord_Initialise(0) != 1) return 15;
     if (ESRecord_GetSimState(0) != 0) return 16;
+    if (!equals(ESRecord_Engine_GetName(0), "")) return 17;
 
     progress = -1;
-    if (ESRecord_GetState(0, progress) != ESRECORD_STATE_IDLE) return 17;
-    if (progress != 0) return 18;
+    if (ESRecord_GetState(0, progress) != ESRECORD_STATE_IDLE) return 18;
+    if (progress != 0) return 19;
+
+    // Resetting an already empty slot is idempotent.
+    if (ESRecord_Initialise(0) != 1) return 20;
+    if (ESRecord_GetSimState(0) != 0) return 21;
+
+    constexpr const char *rpmOverflowPath = "abi-runtime-rpm-overflow.wav";
+    std::filesystem::remove(rpmOverflowPath);
+    SampleConfig rpmOverflow{};
+    rpmOverflow.overrideRevlimit = 1;
+    rpmOverflow.rpm = std::numeric_limits<std::int32_t>::max();
+    rpmOverflow.throttle = 50;
+    rpmOverflow.frequency = 10000;
+    rpmOverflow.length = 1;
+    setOutputPath(rpmOverflow, rpmOverflowPath);
+    if (ESRecord_Record(0, rpmOverflow).success != 0) return 22;
+    if (!fileDoesNotExist(rpmOverflowPath)) return 23;
+
+    constexpr const char *lengthOverflowPath = "abi-runtime-length-overflow.wav";
+    std::filesystem::remove(lengthOverflowPath);
+    SampleConfig lengthOverflow{};
+    lengthOverflow.overrideRevlimit = 0;
+    lengthOverflow.rpm = 2000;
+    lengthOverflow.throttle = 50;
+    lengthOverflow.frequency = 10000;
+    lengthOverflow.length = std::numeric_limits<std::int32_t>::max();
+    setOutputPath(lengthOverflow, lengthOverflowPath);
+    if (ESRecord_Record(0, lengthOverflow).success != 0) return 24;
+    if (!fileDoesNotExist(lengthOverflowPath)) return 25;
+
+    SampleConfig unterminatedPath{};
+    unterminatedPath.rpm = 2000;
+    unterminatedPath.throttle = 50;
+    unterminatedPath.frequency = 10000;
+    unterminatedPath.length = 1;
+    std::memset(unterminatedPath.output, 'x', sizeof(unterminatedPath.output));
+    if (ESRecord_Record(0, unterminatedPath).success != 0) return 26;
 
     return 0;
 }
