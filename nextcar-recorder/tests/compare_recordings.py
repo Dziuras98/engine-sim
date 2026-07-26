@@ -19,6 +19,7 @@ from typing import Any
 class WaveStats:
     path: str
     sha256: str
+    pcm_sha256: str
     channels: int
     sample_width_bytes: int
     sample_rate: int
@@ -44,6 +45,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-wav", type=Path, required=True)
     parser.add_argument("--json-output", type=Path, required=True)
     parser.add_argument("--text-output", type=Path, required=True)
+    parser.add_argument(
+        "--enforce-exact",
+        action="store_true",
+        help="Fail unless metadata, telemetry and decoded PCM are exactly equal.",
+    )
     return parser.parse_args()
 
 
@@ -97,6 +103,7 @@ def read_wave(path: Path) -> tuple[WaveStats, array.array[int]]:
     stats = WaveStats(
         path=str(path),
         sha256=sha256(path),
+        pcm_sha256=hashlib.sha256(raw).hexdigest(),
         channels=channels,
         sample_width_bytes=sample_width,
         sample_rate=sample_rate,
@@ -183,6 +190,79 @@ def sample_comparison(
     }
 
 
+def build_comparison(
+    reference_engine: dict[str, Any],
+    source_engine: dict[str, Any],
+    reference_measurement: dict[str, Any],
+    source_measurement: dict[str, Any],
+    reference_wave: WaveStats,
+    source_wave: WaveStats,
+    reference_samples: array.array[int],
+    source_samples: array.array[int],
+) -> dict[str, Any]:
+    reference_power = float(reference_measurement.get("powerHorsepower", 0.0))
+    source_power = float(source_measurement.get("powerHorsepower", 0.0))
+    reference_torque = float(reference_measurement.get("torqueNewtonMetres", 0.0))
+    source_torque = float(source_measurement.get("torqueNewtonMetres", 0.0))
+    reference_elapsed = int(reference_measurement.get("elapsedMilliseconds", 0))
+    source_elapsed = int(source_measurement.get("elapsedMilliseconds", 0))
+
+    return {
+        "engineNameMatch": reference_engine.get("name") == source_engine.get("name"),
+        "redlineRpmDelta": float(source_engine.get("redlineRpm", 0.0))
+        - float(reference_engine.get("redlineRpm", 0.0)),
+        "displacementLitresDelta": float(
+            source_engine.get("displacementLitres", 0.0)
+        )
+        - float(reference_engine.get("displacementLitres", 0.0)),
+        "powerHorsepowerDelta": source_power - reference_power,
+        "powerRelativeDelta": relative_delta(reference_power, source_power),
+        "torqueNewtonMetresDelta": source_torque - reference_torque,
+        "torqueRelativeDelta": relative_delta(reference_torque, source_torque),
+        "elapsedMillisecondsDelta": source_elapsed - reference_elapsed,
+        "elapsedMillisecondsRatio": (
+            source_elapsed / reference_elapsed if reference_elapsed else None
+        ),
+        "waveFileHashMatch": reference_wave.sha256 == source_wave.sha256,
+        "pcmHashMatch": reference_wave.pcm_sha256 == source_wave.pcm_sha256,
+        "waveFormatMatch": (
+            reference_wave.channels == source_wave.channels
+            and reference_wave.sample_width_bytes == source_wave.sample_width_bytes
+            and reference_wave.sample_rate == source_wave.sample_rate
+        ),
+        "waveFrameCountDelta": source_wave.frame_count - reference_wave.frame_count,
+        "waveRmsRatio": (
+            source_wave.rms / reference_wave.rms if reference_wave.rms else None
+        ),
+        "waveRmsDeltaDb": (
+            20.0 * math.log10(source_wave.rms / reference_wave.rms)
+            if reference_wave.rms and source_wave.rms
+            else None
+        ),
+        "samples": sample_comparison(reference_samples, source_samples),
+    }
+
+
+def exact_contract_failures(comparison: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    samples = comparison["samples"]
+
+    checks = {
+        "engine name differs": comparison["engineNameMatch"],
+        "redline differs": comparison["redlineRpmDelta"] == 0.0,
+        "displacement differs": comparison["displacementLitresDelta"] == 0.0,
+        "power differs": comparison["powerHorsepowerDelta"] == 0.0,
+        "torque differs": comparison["torqueNewtonMetresDelta"] == 0.0,
+        "WAV format differs": comparison["waveFormatMatch"],
+        "WAV frame count differs": comparison["waveFrameCountDelta"] == 0,
+        "PCM hash differs": comparison["pcmHashMatch"],
+        "PCM sample length differs": samples["sameLength"],
+        "PCM samples differ": samples["maximumAbsoluteDifference"] == 0,
+    }
+    failures.extend(message for message, passed in checks.items() if not passed)
+    return failures
+
+
 def main() -> int:
     args = parse_args()
 
@@ -195,11 +275,20 @@ def main() -> int:
 
     reference_engine = reference_manifest.get("engine", {})
     source_engine = source_manifest.get("engine", {})
+    if not isinstance(reference_engine, dict) or not isinstance(source_engine, dict):
+        raise ValueError("Manifest engine metadata must be objects")
 
-    reference_power = float(reference_measurement.get("powerHorsepower", 0.0))
-    source_power = float(source_measurement.get("powerHorsepower", 0.0))
-    reference_torque = float(reference_measurement.get("torqueNewtonMetres", 0.0))
-    source_torque = float(source_measurement.get("torqueNewtonMetres", 0.0))
+    comparison = build_comparison(
+        reference_engine,
+        source_engine,
+        reference_measurement,
+        source_measurement,
+        reference_wave,
+        source_wave,
+        reference_samples,
+        source_samples,
+    )
+    failures = exact_contract_failures(comparison) if args.enforce_exact else []
 
     report: dict[str, Any] = {
         "reference": {
@@ -212,33 +301,11 @@ def main() -> int:
             "measurement": source_measurement,
             "wave": asdict(source_wave),
         },
-        "comparison": {
-            "engineNameMatch": reference_engine.get("name") == source_engine.get("name"),
-            "redlineRpmDelta": float(source_engine.get("redlineRpm", 0.0))
-            - float(reference_engine.get("redlineRpm", 0.0)),
-            "displacementLitresDelta": float(
-                source_engine.get("displacementLitres", 0.0)
-            )
-            - float(reference_engine.get("displacementLitres", 0.0)),
-            "powerHorsepowerDelta": source_power - reference_power,
-            "powerRelativeDelta": relative_delta(reference_power, source_power),
-            "torqueNewtonMetresDelta": source_torque - reference_torque,
-            "torqueRelativeDelta": relative_delta(reference_torque, source_torque),
-            "waveFormatMatch": (
-                reference_wave.channels == source_wave.channels
-                and reference_wave.sample_width_bytes == source_wave.sample_width_bytes
-                and reference_wave.sample_rate == source_wave.sample_rate
-            ),
-            "waveFrameCountDelta": source_wave.frame_count - reference_wave.frame_count,
-            "waveRmsRatio": (
-                source_wave.rms / reference_wave.rms if reference_wave.rms else None
-            ),
-            "waveRmsDeltaDb": (
-                20.0 * math.log10(source_wave.rms / reference_wave.rms)
-                if reference_wave.rms and source_wave.rms
-                else None
-            ),
-            "samples": sample_comparison(reference_samples, source_samples),
+        "comparison": comparison,
+        "contract": {
+            "enforced": args.enforce_exact,
+            "passed": not failures,
+            "failures": failures,
         },
     }
 
@@ -247,7 +314,6 @@ def main() -> int:
         json.dump(report, stream, indent=2, sort_keys=True)
         stream.write("\n")
 
-    comparison = report["comparison"]
     lines = [
         "ESRecorder black-box parity report",
         f"reference ABI: {reference_engine.get('nativeLibraryVersion')}",
@@ -256,9 +322,10 @@ def main() -> int:
         f"redline delta RPM: {comparison['redlineRpmDelta']:.6f}",
         f"displacement delta L: {comparison['displacementLitresDelta']:.9f}",
         f"power delta hp: {comparison['powerHorsepowerDelta']:.6f}",
-        f"power relative delta: {comparison['powerRelativeDelta']}",
         f"torque delta Nm: {comparison['torqueNewtonMetresDelta']:.6f}",
-        f"torque relative delta: {comparison['torqueRelativeDelta']}",
+        f"elapsed ratio source/reference: {comparison['elapsedMillisecondsRatio']}",
+        f"WAV file hash match: {comparison['waveFileHashMatch']}",
+        f"PCM hash match: {comparison['pcmHashMatch']}",
         f"WAV format match: {comparison['waveFormatMatch']}",
         f"WAV frame-count delta: {comparison['waveFrameCountDelta']}",
         f"WAV RMS delta dB: {comparison['waveRmsDeltaDb']}",
@@ -266,10 +333,16 @@ def main() -> int:
         f"sample RMSE: {comparison['samples']['rootMeanSquareDifference']}",
         f"reference WAV SHA-256: {reference_wave.sha256}",
         f"source WAV SHA-256: {source_wave.sha256}",
+        f"reference PCM SHA-256: {reference_wave.pcm_sha256}",
+        f"source PCM SHA-256: {source_wave.pcm_sha256}",
+        f"exact contract passed: {not failures}",
     ]
+    if failures:
+        lines.extend(f"contract failure: {failure}" for failure in failures)
+
     args.text_output.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
-    return 0
+    return 2 if failures else 0
 
 
 if __name__ == "__main__":
