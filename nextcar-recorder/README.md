@@ -18,13 +18,16 @@ piranha source commit:
 recorder ABI:
 2000
 
+reference ABI:
+1010
+
 compatibility target:
 0.1.14a-reference-pending
 ```
 
 This stage replaces the historical, opaque precompiled recorder boundary with a
-repeatable source build. It does **not** yet claim acoustic or telemetry parity
-with the Community Edition 0.1.14a executable.
+repeatable source build and a black-box comparison against the recorder DLL
+pinned by `ESRecorder-nextcar`.
 
 ## Boundary
 
@@ -42,7 +45,8 @@ the wire layout explicit:
 - version, source-revision and compatibility-target queries.
 
 The released DLL is required to contain Boost.Filesystem statically. CI rejects
-an external `boost_*.dll` dependency and records the complete export table.
+an external `boost_*.dll` dependency and records the complete export table and
+SHA-256 identities of both the pinned reference DLL and source-built DLL.
 
 ## Source changes required by recording
 
@@ -58,8 +62,60 @@ The port keeps changes to the engine-sim source boundary small and reviewable:
   capture call owns the instance lock;
 - each native instance owns and releases its simulator, engine, vehicle and
   transmission explicitly;
+- failed or timed-out recordings remove partial WAV output;
+- RPM and RIFF-size calculations reject integer overflow before recording;
 - the headless impulse-response loader accepts validated mono PCM16 WAV without
   pulling the SDL/delta-studio UI stack into the DLL.
+
+## Black-box parity contract
+
+CI builds isolated managed hosts for:
+
+```text
+reference host: pinned ABI 1010 esrecord-lib.dll
+source host:    source-built ABI 2000 esrecord-lib.dll
+```
+
+Both hosts receive byte-identical engine scripts. The historical script search
+order loads `../../es/objects/objects.mr` before the packaged copy, so CI applies
+the same ephemeral `convolution: 1.0` wrapper change to the shared checkout used
+by both hosts. The EJ25 engine script itself remains unchanged.
+
+The operating-point matrix is:
+
+```text
+RPM:       2000, 4000, 6000
+throttle:  25%, 50%, 100%
+frequency: 10000 Hz
+length:    1 second
+warmup:    60 updates
+```
+
+Engine identity, ABI identity, mono PCM16 format and frame count are exact
+requirements. Power, torque and audio-distribution features use explicit
+bounded tolerances:
+
+```text
+power:                0.25 hp or 0.25%
+torque:               0.5 Nm or 0.25%
+RMS level:            0.10 dB
+DC mean:              0.5% of PCM full scale
+zero-crossing rate:   0.001 absolute
+crest factor:         2% relative
+clipped samples:      256 samples
+absolute peak:        512 PCM units
+p50/p90/p95/p99 abs:  256 PCM units or 3% relative
+```
+
+Decoded PCM hashes, direct sample correlation and execution time remain in the
+evidence artifact as diagnostics. They are not blocking requirements because
+the frozen synthesizer calls global `rand()` from its asynchronous audio thread;
+the exact random-call phase can vary with thread scheduling even when the
+resulting telemetry and signal distribution remain equivalent.
+
+A sequential multi-point batch is also recorded and published as diagnostic
+evidence. The blocking comparison uses a fresh CLI process for every operating
+point so cross-sample instance state is not conflated with native ABI parity.
 
 ## Frozen dependency compatibility
 
@@ -113,8 +169,8 @@ The source DLL must not replace the binary pinned by ESRecorder until all of the
 following are complete:
 
 1. reproducible native build, layout test and native runtime export test;
-2. managed loader validation against ABI 2000;
+2. managed loader validation against ABI 1010 and ABI 2000;
 3. real `.mr` compile and short WAV recording fixture;
-4. deterministic WAV/header/telemetry checks;
-5. fixture-corpus comparison with the 0.1.14a reference executable;
+4. exact WAV structure and bounded telemetry/audio-feature checks;
+5. nine-point black-box comparison with the pinned 0.1.14a reference DLL;
 6. reviewed ESRecorder fork update followed by a reviewed Nextcar gitlink update.
